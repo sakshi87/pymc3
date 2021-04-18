@@ -11,6 +11,8 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+import warnings
+
 from typing import (
     Callable,
     Dict,
@@ -78,7 +80,7 @@ __all__ = [
 def pandas_to_array(data):
     """Convert a pandas object to a NumPy array.
 
-    XXX: When `data` is a generator, this will return a Aesara tensor!
+    XXX: When `data` is a generator, this will return an Aesara tensor!
 
     """
     if hasattr(data, "to_numpy") and hasattr(data, "isnull"):
@@ -141,8 +143,7 @@ def change_rv_size(
     new_size
         The new size.
     expand:
-        Whether or not to completely replace the `size` parameter in `rv_var`
-        with `new_size` or simply prepend it to the existing `size`.
+        Expand the existing size by `new_size`.
 
     """
     rv_node = rv_var.owner
@@ -151,6 +152,8 @@ def change_rv_size(
     tag = rv_var.tag
 
     if expand:
+        if rv_node.op.ndim_supp == 0 and at.get_vector_length(size) == 0:
+            size = rv_node.op._infer_shape(size, dist_params)
         new_size = tuple(np.atleast_1d(new_size)) + tuple(size)
 
     new_rv_node = rv_node.op.make_node(rng, new_size, dtype, *dist_params)
@@ -168,19 +171,17 @@ def change_rv_size(
 def extract_rv_and_value_vars(
     var: TensorVariable,
 ) -> Tuple[TensorVariable, TensorVariable]:
-    """Extract a random variable and its corresponding value variable from a generic
-    `TensorVariable`.
+    """Return a random variable and it's observations or value variable, or ``None``.
 
     Parameters
     ==========
     var
-        A variable corresponding to a `RandomVariable`.
+        A variable corresponding to a ``RandomVariable``.
 
     Returns
     =======
-    The first value in the tuple is the `RandomVariable`, and the second is the
-    measure-space variable that corresponds with the latter (i.e. the "value"
-    variable).
+    The first value in the tuple is the ``RandomVariable``, and the second is the
+    measure/log-likelihood value variable that corresponds with the latter.
 
     """
     if not var.owner:
@@ -194,7 +195,7 @@ def extract_rv_and_value_vars(
 
 
 def extract_obs_data(x: TensorVariable) -> np.ndarray:
-    """Extract data observed symbolic variables.
+    """Extract data from observed symbolic variables.
 
     Raises
     ------
@@ -330,17 +331,24 @@ def rvs_to_value_vars(
         rv_var, rv_value_var = extract_rv_and_value_vars(var)
 
         if rv_value_var is None:
+            warnings.warn(
+                f"No value variable found for {rv_var}; "
+                "the random variable will not be replaced."
+            )
             return []
 
         transform = getattr(rv_value_var.tag, "transform", None)
 
         if transform is None or not apply_transforms:
             replacements[var] = rv_value_var
-            return []
+            # In case the value variable is itself a graph, we walk it for
+            # potential replacements
+            return [rv_value_var]
 
         trans_rv_value = transform.backward(rv_var, rv_value_var)
         replacements[var] = trans_rv_value
 
+        # Walk the transformed variable and make replacements
         return [trans_rv_value]
 
     return replace_rvs_in_graphs(graphs, transform_replacements, initial_replacements, **kwargs)
@@ -348,11 +356,11 @@ def rvs_to_value_vars(
 
 def inputvars(a):
     """
-    Get the inputs into a aesara variables
+    Get the inputs into Aesara variables
 
     Parameters
     ----------
-        a: aesara variable
+        a: Aesara variable
 
     Returns
     -------
@@ -361,24 +369,24 @@ def inputvars(a):
     return [v for v in graph_inputs(makeiter(a)) if isinstance(v, TensorVariable)]
 
 
-def cont_inputs(f):
+def cont_inputs(a):
     """
-    Get the continuous inputs into a aesara variables
+    Get the continuous inputs into Aesara variables
 
     Parameters
     ----------
-        a: aesara variable
+        a: Aesara variable
 
     Returns
     -------
         r: list of tensor variables that are continuous inputs
     """
-    return typefilter(inputvars(f), continuous_types)
+    return typefilter(inputvars(a), continuous_types)
 
 
 def floatX(X):
     """
-    Convert a aesara tensor or numpy array to aesara.config.floatX type.
+    Convert an Aesara tensor or numpy array to aesara.config.floatX type.
     """
     try:
         return X.astype(aesara.config.floatX)
@@ -553,12 +561,12 @@ def join_nonshared_inputs(
     make_shared: bool = False,
 ):
     """
-    Takes a list of aesara Variables and joins their non shared inputs into a single input.
+    Takes a list of Aesara Variables and joins their non shared inputs into a single input.
 
     Parameters
     ----------
     point: a sample point
-    xs: list of aesara tensors
+    xs: list of Aesara tensors
     vars: list of variables to join
 
     Returns

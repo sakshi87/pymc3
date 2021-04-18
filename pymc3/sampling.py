@@ -870,6 +870,8 @@ def _sample(
     """
     skip_first = kwargs.get("skip_first", 0)
 
+    trace = copy(trace)
+
     sampling = _iter_sample(draws, step, start, trace, chain, tune, model, random_seed, callback)
     _pbar_data = {"chain": chain, "divergences": 0}
     _desc = "Sampling chain {chain:d}, {divergences:,d} divergences"
@@ -1677,7 +1679,7 @@ def sample_posterior_predictive(
     if var_names is not None:
         vars_ = [model[x] for x in var_names]
     else:
-        vars_ = model.observed_RVs
+        vars_ = model.observed_RVs + model.auto_deterministics
 
     if random_seed is not None:
         # np.random.seed(random_seed)
@@ -1953,7 +1955,7 @@ def sample_prior_predictive(
         )
 
     if var_names is None:
-        prior_pred_vars = model.observed_RVs
+        prior_pred_vars = model.observed_RVs + model.auto_deterministics
         prior_vars = (
             get_default_varnames(model.unobserved_RVs, include_transformed=True) + model.potentials
         )

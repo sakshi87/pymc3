@@ -424,10 +424,7 @@ def logpow(v, p):
 
 def discrete_weibull_logpmf(value, q, beta):
     return floatX(
-        np.log(
-            np.power(floatX(q), np.power(floatX(value), floatX(beta)))
-            - np.power(floatX(q), np.power(floatX(value + 1), floatX(beta)))
-        )
+        np.log(np.power(q, np.power(value, beta)) - np.power(q, np.power(value + 1, beta)))
     )
 
 
@@ -1402,7 +1399,6 @@ class TestMatchesScipy:
             decimal=select_by_precision(float64=4, float32=3),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_pareto(self):
         self.check_logp(
             Pareto,
@@ -1557,7 +1553,6 @@ class TestMatchesScipy:
             {"p": Unit},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_discrete_weibull(self):
         self.check_logp(
             DiscreteWeibull,

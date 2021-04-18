@@ -49,10 +49,11 @@ def find_MAP(
     *args,
     **kwargs
 ):
-    """
-    Finds the local maximum a posteriori point given a model.
+    """Finds the local maximum a posteriori point given a model.
 
-    find_MAP should not be used to initialize the NUTS sampler. Simply call pymc3.sample() and it will automatically initialize NUTS in a better way.
+    `find_MAP` should not be used to initialize the NUTS sampler. Simply call
+    ``pymc3.sample()`` and it will automatically initialize NUTS in a better
+    way.
 
     Parameters
     ----------
@@ -79,10 +80,10 @@ def find_MAP(
 
     Notes
     -----
-    Older code examples used find_MAP() to initialize the NUTS sampler,
+    Older code examples used `find_MAP` to initialize the NUTS sampler,
     but this is not an effective way of choosing starting values for sampling.
     As a result, we have greatly enhanced the initialization of NUTS and
-    wrapped it inside pymc3.sample() and you should thus avoid this method.
+    wrapped it inside ``pymc3.sample()`` and you should thus avoid this method.
     """
     model = modelcontext(model)
 
@@ -156,9 +157,7 @@ def find_MAP(
 
     mx0 = RaveledVars(mx0, x0.point_map_info)
 
-    vars = get_default_varnames(
-        [v.tag.value_var for v in model.unobserved_RVs], include_transformed
-    )
+    vars = get_default_varnames(model.unobserved_value_vars, include_transformed)
     mx = {
         var.name: value
         for var, value in zip(vars, model.fastfn(vars)(DictToArrayBijection.rmap(mx0)))
