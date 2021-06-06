@@ -19,22 +19,29 @@ import types
 import warnings
 
 from abc import ABCMeta
-from copy import copy
-from typing import TYPE_CHECKING
+from typing import Optional
 
+import aesara
+import aesara.tensor as at
 import dill
 
 from aesara.tensor.random.op import RandomVariable
+from aesara.tensor.random.var import RandomStateSharedVariable
 
+from pymc3.aesaraf import change_rv_size
 from pymc3.distributions import _logcdf, _logp
-
-if TYPE_CHECKING:
-    from typing import Optional, Callable
-
-import aesara
-import aesara.graph.basic
-import aesara.tensor as at
-
+from pymc3.distributions.shape_utils import (
+    Dims,
+    Shape,
+    Size,
+    convert_dims,
+    convert_shape,
+    convert_size,
+    find_size,
+    maybe_resize,
+    resize_from_dims,
+    resize_from_observed,
+)
 from pymc3.util import UNSET, get_repr_for_variable
 from pymc3.vartypes import string_types
 
@@ -77,14 +84,6 @@ class DistributionMeta(ABCMeta):
         rv_type = None
 
         if isinstance(rv_op, RandomVariable):
-            if not rv_op.inplace:
-                # TODO: This is a temporary work-around.
-                # Remove this once we know what we want regarding RNG states
-                # and their propagation.
-                rv_op = copy(rv_op)
-                rv_op.inplace = True
-                clsdict["rv_op"] = rv_op
-
             rv_type = type(rv_op)
 
         new_cls = super().__new__(cls, name, bases, clsdict)
@@ -108,13 +107,6 @@ class DistributionMeta(ABCMeta):
                     value_var = rvs_to_values.get(var, var)
                     return class_logcdf(value_var, *dist_params, **kwargs)
 
-            # class_transform = clsdict.get("transform")
-            # if class_transform:
-            #
-            #     @logp_transform.register(rv_type)
-            #     def transform(op, *args, **kwargs):
-            #         return class_transform(*args, **kwargs)
-
             # Register the Aesara `RandomVariable` type as a subclass of this
             # `Distribution` type.
             new_cls.register(rv_type)
@@ -128,7 +120,52 @@ class Distribution(metaclass=DistributionMeta):
     rv_class = None
     rv_op = None
 
-    def __new__(cls, name, *args, **kwargs):
+    def __new__(
+        cls,
+        name: str,
+        *args,
+        rng=None,
+        dims: Optional[Dims] = None,
+        initval=None,
+        observed=None,
+        total_size=None,
+        transform=UNSET,
+        **kwargs,
+    ) -> RandomVariable:
+        """Adds a RandomVariable corresponding to a PyMC3 distribution to the current model.
+
+        Note that all remaining kwargs must be compatible with ``.dist()``
+
+        Parameters
+        ----------
+        cls : type
+            A PyMC3 distribution.
+        name : str
+            Name for the new model variable.
+        rng : optional
+            Random number generator to use with the RandomVariable.
+        dims : tuple, optional
+            A tuple of dimension names known to the model.
+        initval : optional
+            Test value to be attached to the output RV.
+            Must match its shape exactly.
+        observed : optional
+            Observed data to be passed when registering the random variable in the model.
+            See ``Model.register_rv``.
+        total_size : float, optional
+            See ``Model.register_rv``.
+        transform : optional
+            See ``Model.register_rv``.
+        **kwargs
+            Keyword arguments that will be forwarded to ``.dist()``.
+            Most prominently: ``shape`` and ``size``
+
+        Returns
+        -------
+        rv : RandomVariable
+            The created RV, registered in the Model.
+        """
+
         try:
             from pymc3.model import Model
 
@@ -141,40 +178,141 @@ class Distribution(metaclass=DistributionMeta):
                 "for a standalone distribution."
             )
 
-        rng = kwargs.pop("rng", None)
-
-        if rng is None:
-            rng = model.default_rng
+        if "testval" in kwargs:
+            initval = kwargs.pop("testval")
+            warnings.warn(
+                "The `testval` argument is deprecated; use `initval`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         if not isinstance(name, string_types):
             raise TypeError(f"Name needs to be a string but got: {name}")
 
-        data = kwargs.pop("observed", None)
+        if rng is None:
+            rng = model.next_rng()
 
-        total_size = kwargs.pop("total_size", None)
+        if dims is not None and "shape" in kwargs:
+            raise ValueError(
+                f"Passing both `dims` ({dims}) and `shape` ({kwargs['shape']}) is not supported!"
+            )
+        if dims is not None and "size" in kwargs:
+            raise ValueError(
+                f"Passing both `dims` ({dims}) and `size` ({kwargs['size']}) is not supported!"
+            )
+        dims = convert_dims(dims)
 
-        dims = kwargs.pop("dims", None)
+        # Create the RV without specifying initval, because the initval may have a shape
+        # that only matches after replicating with a size implied by dims (see below).
+        rv_out = cls.dist(*args, rng=rng, initval=None, **kwargs)
+        ndim_actual = rv_out.ndim
+        resize_shape = None
 
-        if "shape" in kwargs:
-            raise DeprecationWarning("The `shape` keyword is deprecated; use `size`.")
+        # `dims` are only available with this API, because `.dist()` can be used
+        # without a modelcontext and dims are not tracked at the Aesara level.
+        if dims is not None:
+            ndim_resize, resize_shape, dims = resize_from_dims(dims, ndim_actual, model)
+        elif observed is not None:
+            ndim_resize, resize_shape, observed = resize_from_observed(observed, ndim_actual)
 
-        transform = kwargs.pop("transform", UNSET)
+        if resize_shape:
+            # A batch size was specified through `dims`, or implied by `observed`.
+            rv_out = change_rv_size(rv_var=rv_out, new_size=resize_shape, expand=True)
 
-        rv_out = cls.dist(*args, rng=rng, **kwargs)
+        if initval is not None:
+            # Assigning the testval earlier causes trouble because the RV may not be created with the final shape already.
+            rv_out.tag.test_value = initval
 
-        return model.register_rv(rv_out, name, data, total_size, dims=dims, transform=transform)
+        return model.register_rv(rv_out, name, observed, total_size, dims=dims, transform=transform)
 
     @classmethod
-    def dist(cls, dist_params, **kwargs):
+    def dist(
+        cls,
+        dist_params,
+        *,
+        shape: Optional[Shape] = None,
+        size: Optional[Size] = None,
+        initval=None,
+        **kwargs,
+    ) -> RandomVariable:
+        """Creates a RandomVariable corresponding to the `cls` distribution.
 
-        testval = kwargs.pop("testval", None)
+        Parameters
+        ----------
+        dist_params : array-like
+            The inputs to the `RandomVariable` `Op`.
+        shape : int, tuple, Variable, optional
+            A tuple of sizes for each dimension of the new RV.
 
-        rv_var = cls.rv_op(*dist_params, **kwargs)
+            An Ellipsis (...) may be inserted in the last position to short-hand refer to
+            all the dimensions that the RV would get if no shape/size/dims were passed at all.
+        size : int, tuple, Variable, optional
+            For creating the RV like in Aesara/NumPy.
+        initival : optional
+            Test value to be attached to the output RV.
+            Must match its shape exactly.
 
-        if testval is not None:
-            rv_var.tag.test_value = testval
+        Returns
+        -------
+        rv : RandomVariable
+            The created RV.
+        """
+        if "testval" in kwargs:
+            initval = kwargs.pop("testval")
+            warnings.warn(
+                "The `testval` argument is deprecated. "
+                "Use `initval` to set initial values for a `Model`; "
+                "otherwise, set test values on Aesara parameters explicitly "
+                "when attempting to use Aesara's test value debugging features.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if "dims" in kwargs:
+            raise NotImplementedError("The use of a `.dist(dims=...)` API is not supported.")
+        if shape is not None and size is not None:
+            raise ValueError(
+                f"Passing both `shape` ({shape}) and `size` ({size}) is not supported!"
+            )
 
-        return rv_var
+        shape = convert_shape(shape)
+        size = convert_size(size)
+
+        create_size, ndim_expected, ndim_batch, ndim_supp = find_size(
+            shape=shape, size=size, ndim_supp=cls.rv_op.ndim_supp
+        )
+        # Create the RV with a `size` right away.
+        # This is not necessarily the final result.
+        rv_out = cls.rv_op(*dist_params, size=create_size, **kwargs)
+        rv_out = maybe_resize(
+            rv_out,
+            cls.rv_op,
+            dist_params,
+            ndim_expected,
+            ndim_batch,
+            ndim_supp,
+            shape,
+            size,
+            **kwargs,
+        )
+
+        rng = kwargs.pop("rng", None)
+        if (
+            rv_out.owner
+            and isinstance(rv_out.owner.op, RandomVariable)
+            and isinstance(rng, RandomStateSharedVariable)
+            and not getattr(rng, "default_update", None)
+        ):
+            # This tells `aesara.function` that the shared RNG variable
+            # is mutable, which--in turn--tells the `FunctionGraph`
+            # `Supervisor` feature to allow in-place updates on the variable.
+            # Without it, the `RandomVariable`s could not be optimized to allow
+            # in-place RNG updates, forcing all sample results from compiled
+            # functions to be the same on repeated evaluations.
+            new_rng = rv_out.owner.outputs[0]
+            rv_out.update = (rng, new_rng)
+            rng.default_update = new_rng
+
+        return rv_out
 
     def _distr_parameters_for_repr(self):
         """Return the names of the parameters for this distribution (e.g. "mu"
@@ -253,14 +391,14 @@ class NoDistribution(Distribution):
         self,
         shape,
         dtype,
-        testval=None,
+        initval=None,
         defaults=(),
         parent_dist=None,
         *args,
         **kwargs,
     ):
         super().__init__(
-            shape=shape, dtype=dtype, testval=testval, defaults=defaults, *args, **kwargs
+            shape=shape, dtype=dtype, initval=initval, defaults=defaults, *args, **kwargs
         )
         self.parent_dist = parent_dist
 
@@ -318,7 +456,7 @@ class DensityDist(Distribution):
         logp,
         shape=(),
         dtype=None,
-        testval=0,
+        initval=0,
         random=None,
         wrap_random_with_dist_shape=True,
         check_shape_in_random=True,
@@ -339,8 +477,8 @@ class DensityDist(Distribution):
             a value here.
         dtype: None, str (Optional)
             The dtype of the distribution.
-        testval: number or array (Optional)
-            The ``testval`` of the RV's tensor that follow the ``DensityDist``
+        initval: number or array (Optional)
+            The ``initval`` of the RV's tensor that follow the ``DensityDist``
             distribution.
         args, kwargs: (Optional)
             These are passed to the parent class' ``__init__``.
@@ -376,7 +514,7 @@ class DensityDist(Distribution):
         """
         if dtype is None:
             dtype = aesara.config.floatX
-        super().__init__(shape, dtype, testval, *args, **kwargs)
+        super().__init__(shape, dtype, initval, *args, **kwargs)
         self.logp = logp
         if type(self.logp) == types.MethodType:
             if PLATFORM != "linux":

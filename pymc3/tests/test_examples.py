@@ -51,7 +51,7 @@ def get_city_data():
     return data.merge(unique, "inner", on="fips")
 
 
-@pytest.mark.xfail(reason="Bernoulli distribution not refactored")
+@pytest.mark.xfail(reason="Bernoulli logitp distribution not refactored")
 class TestARM5_4(SeededTest):
     def build_model(self):
         data = pd.read_csv(
@@ -68,7 +68,7 @@ class TestARM5_4(SeededTest):
         P["1"] = 1
 
         with pm.Model() as model:
-            effects = pm.Normal("effects", mu=0, sigma=100, shape=len(P.columns))
+            effects = pm.Normal("effects", mu=0, sigma=100, size=len(P.columns))
             logit_p = at.dot(floatX(np.array(P)), effects)
             pm.Bernoulli("s", logit_p=logit_p, observed=floatX(data.switch.values))
         return model
@@ -94,7 +94,7 @@ class TestARM12_6(SeededTest):
             groupsd = pm.Uniform("groupsd", 0, 10.0)
             sd = pm.Uniform("sd", 0, 10.0)
             floor_m = pm.Normal("floor_m", 0, 5.0 ** -2.0)
-            means = pm.Normal("means", groupmean, groupsd ** -2.0, shape=len(self.obs_means))
+            means = pm.Normal("means", groupmean, groupsd ** -2.0, size=len(self.obs_means))
             pm.Normal("lr", floor * floor_m + means[group], sd ** -2.0, observed=lradon)
         return model
 
@@ -132,7 +132,7 @@ class TestARM12_6Uranium(SeededTest):
             sd = pm.Uniform("sd", 0, 10.0)
             floor_m = pm.Normal("floor_m", 0, 5.0 ** -2.0)
             u_m = pm.Normal("u_m", 0, 5.0 ** -2)
-            means = pm.Normal("means", groupmean, groupsd ** -2.0, shape=len(self.obs_means))
+            means = pm.Normal("means", groupmean, groupsd ** -2.0, size=len(self.obs_means))
             pm.Normal(
                 "lr",
                 floor * floor_m + means[group] + ufull * u_m,
@@ -194,7 +194,7 @@ def build_disaster_model(masked=False):
 
 
 @pytest.mark.xfail(
-    reason="DiscreteUniform hasn't been refactored"
+    reason="Arviz summary fails"
     # condition=(aesara.config.floatX == "float32"), reason="Fails on float32"
 )
 class TestDisasterModel(SeededTest):
@@ -204,9 +204,9 @@ class TestDisasterModel(SeededTest):
         model = build_disaster_model(masked=False)
         with model:
             # Initial values for stochastic nodes
-            start = {"early_mean": 2.0, "late_mean": 3.0}
+            start = {"early_mean": 2, "late_mean": 3.0}
             # Use slice sampler for means (other variables auto-selected)
-            step = pm.Slice([model.early_mean_log__, model.late_mean_log__])
+            step = pm.Slice([model["early_mean_log__"], model["late_mean_log__"]])
             tr = pm.sample(500, tune=50, start=start, step=step, chains=2)
             az.summary(tr)
 
@@ -217,31 +217,11 @@ class TestDisasterModel(SeededTest):
             # Initial values for stochastic nodes
             start = {"early_mean": 2.0, "late_mean": 3.0}
             # Use slice sampler for means (other variables auto-selected)
-            step = pm.Slice([model.early_mean_log__, model.late_mean_log__])
+            step = pm.Slice([model["early_mean_log__"], model["late_mean_log__"]])
             tr = pm.sample(500, tune=50, start=start, step=step, chains=2)
             az.summary(tr)
 
 
-@pytest.mark.xfail(reason="GLM hasn't been refactored")
-class TestGLMLinear(SeededTest):
-    def build_model(self):
-        size = 50
-        true_intercept = 1
-        true_slope = 2
-        self.x = np.linspace(0, 1, size)
-        self.y = true_intercept + self.x * true_slope + np.random.normal(scale=0.5, size=size)
-        data = dict(x=self.x, y=self.y)
-        with pm.Model() as model:
-            pm.GLM.from_formula("y ~ x", data)
-        return model
-
-    def test_run(self):
-        with self.build_model():
-            start = pm.find_MAP(method="Powell")
-            pm.sample(50, pm.Slice(), start=start)
-
-
-@pytest.mark.xfail(reason="ZeroInflatedPoisson hasn't been refactored for v4")
 class TestLatentOccupancy(SeededTest):
     """
     From the PyMC example list
@@ -296,14 +276,14 @@ class TestLatentOccupancy(SeededTest):
                 "z": (self.y > 0).astype("int16"),
                 "theta": np.array(5, dtype="f"),
             }
-            step_one = pm.Metropolis([model.theta_interval__, model.psi_logodds__])
-            step_two = pm.BinaryMetropolis([model.z])
+            step_one = pm.Metropolis([model["theta_interval__"], model["psi_logodds__"]])
+            step_two = pm.BinaryMetropolis([model.rvs_to_values[model["z"]]])
             pm.sample(50, step=[step_one, step_two], start=start, chains=1)
 
 
 @pytest.mark.xfail(
-    # condition=(aesara.config.floatX == "float32"),
-    # reason="Fails on float32 due to starting inf at starting logP",
+    condition=(aesara.config.floatX == "float32"),
+    reason="Fails on float32 due to starting inf at starting logP",
 )
 class TestRSV(SeededTest):
     """
@@ -329,11 +309,11 @@ class TestRSV(SeededTest):
             # Al Bashir hospital market share
             market_share = pm.Uniform("market_share", 0.5, 0.6)
             # Number of 1 y.o. in Amman
-            n_amman = pm.Binomial("n_amman", kids, amman_prop, shape=3)
+            n_amman = pm.Binomial("n_amman", kids, amman_prop, size=3)
             # Prior probability
-            prev_rsv = pm.Beta("prev_rsv", 1, 5, shape=3)
+            prev_rsv = pm.Beta("prev_rsv", 1, 5, size=3)
             # RSV in Amman
-            y_amman = pm.Binomial("y_amman", n_amman, prev_rsv, shape=3, testval=100)
+            y_amman = pm.Binomial("y_amman", n_amman, prev_rsv, size=3)
             # Likelihood for number with RSV in hospital (assumes Pr(hosp | RSV) = 1)
             pm.Binomial("y_hosp", y_amman, market_share, observed=rsv_cases)
         return model

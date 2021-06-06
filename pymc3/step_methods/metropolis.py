@@ -13,7 +13,6 @@
 #   limitations under the License.
 from typing import Any, Callable, Dict, List, Tuple
 
-import aesara
 import numpy as np
 import numpy.random as nr
 import scipy.linalg
@@ -23,7 +22,7 @@ from aesara.tensor.random.basic import BernoulliRV, CategoricalRV
 
 import pymc3 as pm
 
-from pymc3.aesaraf import floatX, rvs_to_value_vars
+from pymc3.aesaraf import compile_rv_inplace, floatX, rvs_to_value_vars
 from pymc3.blocking import DictToArrayBijection, RaveledVars
 from pymc3.step_methods.arraystep import (
     ArrayStep,
@@ -108,8 +107,8 @@ class Metropolis(ArrayStepShared):
     stats_dtypes = [
         {
             "accept": np.float64,
-            "accepted": np.bool,
-            "tune": np.bool,
+            "accepted": bool,
+            "tune": bool,
             "scaling": np.float64,
         }
     ]
@@ -307,7 +306,7 @@ class BinaryMetropolis(ArrayStep):
     stats_dtypes = [
         {
             "accept": np.float64,
-            "tune": np.bool,
+            "tune": bool,
             "p_jump": np.float64,
         }
     ]
@@ -329,6 +328,7 @@ class BinaryMetropolis(ArrayStep):
 
     def astep(self, q0: RaveledVars, logp) -> Tuple[RaveledVars, List[Dict[str, Any]]]:
 
+        logp_q0 = logp(q0)
         point_map_info = q0.point_map_info
         q0 = q0.data
 
@@ -340,8 +340,9 @@ class BinaryMetropolis(ArrayStep):
         # Locations where switches occur, according to p_jump
         switch_locs = rand_array < p_jump
         q[switch_locs] = True - q[switch_locs]
+        logp_q = logp(RaveledVars(q, point_map_info))
 
-        accept = logp(q) - logp(q0)
+        accept = logp_q - logp_q0
         q_new, accepted = metrop_select(accept, q, q0)
         self.accepted += accepted
 
@@ -669,8 +670,8 @@ class DEMetropolis(PopulationArrayStepShared):
     stats_dtypes = [
         {
             "accept": np.float64,
-            "accepted": np.bool,
-            "tune": np.bool,
+            "accepted": bool,
+            "tune": bool,
             "scaling": np.float64,
             "lambda": np.float64,
         }
@@ -818,8 +819,8 @@ class DEMetropolisZ(ArrayStepShared):
     stats_dtypes = [
         {
             "accept": np.float64,
-            "accepted": np.bool,
-            "tune": np.bool,
+            "accepted": bool,
+            "tune": bool,
             "scaling": np.float64,
             "lambda": np.float64,
         }
@@ -983,6 +984,6 @@ def delta_logp(point, logp, vars, shared):
 
     logp1 = pm.CallableTensor(logp0)(inarray1)
 
-    f = aesara.function([inarray1, inarray0], logp1 - logp0)
+    f = compile_rv_inplace([inarray1, inarray0], logp1 - logp0)
     f.trust_input = True
     return f

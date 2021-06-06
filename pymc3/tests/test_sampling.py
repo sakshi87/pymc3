@@ -31,6 +31,7 @@ from scipy import stats
 
 import pymc3 as pm
 
+from pymc3.aesaraf import compile_rv_inplace
 from pymc3.backends.ndarray import NDArray
 from pymc3.exceptions import IncorrectArgumentsError, SamplingError
 from pymc3.tests.helpers import SeededTest
@@ -213,7 +214,7 @@ class TestSample(SeededTest):
                 return_inferencedata=True,
                 discard_tuned_samples=True,
                 idata_kwargs={"prior": prior},
-                random_seed=-1
+                random_seed=-1,
             )
             assert "prior" in result
             assert isinstance(result, InferenceData)
@@ -386,7 +387,7 @@ class TestNamedSampling(SeededTest):
                 mu=np.atleast_2d(0),
                 tau=np.atleast_2d(1e20),
                 size=(1, 1),
-                testval=np.atleast_2d(0),
+                initval=np.atleast_2d(0),
             )
             theta = pm.Normal(
                 "theta", mu=at.dot(G_var, theta0), tau=np.atleast_2d(1e20), size=(1, 1)
@@ -402,7 +403,7 @@ class TestNamedSampling(SeededTest):
                 mu=np.atleast_2d(0),
                 tau=np.atleast_2d(1e20),
                 size=(1, 1),
-                testval=np.atleast_2d(0),
+                initval=np.atleast_2d(0),
             )
             theta = pm.Normal(
                 "theta", mu=at.dot(G_var, theta0), tau=np.atleast_2d(1e20), size=(1, 1)
@@ -418,7 +419,7 @@ class TestNamedSampling(SeededTest):
                 mu=np.atleast_2d(0),
                 tau=np.atleast_2d(1e20),
                 size=(1, 1),
-                testval=np.atleast_2d(0),
+                initval=np.atleast_2d(0),
             )
             theta = pm.Normal(
                 "theta", mu=at.dot(G_var, theta0), tau=np.atleast_2d(1e20), size=(1, 1)
@@ -603,7 +604,6 @@ class TestSamplePPC(SeededTest):
             _, pval = stats.kstest(ppc["b"], stats.norm(scale=scale).cdf)
             assert pval > 0.001
 
-    @pytest.mark.xfail(reason="HalfFlat not refactored for v4")
     def test_model_not_drawable_prior(self):
         data = np.random.poisson(lam=10, size=200)
         model = pm.Model()
@@ -613,18 +613,20 @@ class TestSamplePPC(SeededTest):
             trace = pm.sample(tune=1000)
 
         with model:
-            with pytest.raises(ValueError) as excinfo:
+            with pytest.raises(NotImplementedError) as excinfo:
                 pm.sample_prior_predictive(50)
             assert "Cannot sample" in str(excinfo.value)
             samples = pm.sample_posterior_predictive(trace, 40)
             assert samples["foo"].shape == (40, 200)
 
     def test_model_shared_variable(self):
-        x = np.random.randn(100)
+        rng = np.random.RandomState(9832)
+
+        x = rng.randn(100)
         y = x > 0
         x_shared = aesara.shared(x)
         y_shared = aesara.shared(y)
-        with pm.Model() as model:
+        with pm.Model(rng_seeder=rng) as model:
             coeff = pm.Normal("x", mu=0, sd=1)
             logistic = pm.Deterministic("p", pm.math.sigmoid(coeff * x_shared))
 
@@ -645,12 +647,12 @@ class TestSamplePPC(SeededTest):
         npt.assert_allclose(post_pred["p"], expected_p)
 
     def test_deterministic_of_observed(self):
-        np.random.seed(8442)
+        rng = np.random.RandomState(8442)
 
-        meas_in_1 = pm.aesaraf.floatX(2 + 4 * np.random.randn(10))
-        meas_in_2 = pm.aesaraf.floatX(5 + 4 * np.random.randn(10))
+        meas_in_1 = pm.aesaraf.floatX(2 + 4 * rng.randn(10))
+        meas_in_2 = pm.aesaraf.floatX(5 + 4 * rng.randn(10))
         nchains = 2
-        with pm.Model() as model:
+        with pm.Model(rng_seeder=rng) as model:
             mu_in_1 = pm.Normal("mu_in_1", 0, 1)
             sigma_in_1 = pm.HalfNormal("sd_in_1", 1)
             mu_in_2 = pm.Normal("mu_in_2", 0, 1)
@@ -661,7 +663,6 @@ class TestSamplePPC(SeededTest):
             out_diff = in_1 + in_2
             pm.Deterministic("out", out_diff)
 
-            model.default_rng.get_value(borrow=True).seed(0)
             trace = pm.sample(
                 100,
                 chains=nchains,
@@ -671,7 +672,6 @@ class TestSamplePPC(SeededTest):
 
             rtol = 1e-5 if aesara.config.floatX == "float64" else 1e-4
 
-            model.default_rng.get_value(borrow=True).seed(0)
             ppc = pm.sample_posterior_predictive(
                 model=model,
                 trace=trace,
@@ -683,15 +683,15 @@ class TestSamplePPC(SeededTest):
             npt.assert_allclose(ppc["in_1"] + ppc["in_2"], ppc["out"], rtol=rtol)
 
     def test_deterministic_of_observed_modified_interface(self):
-        np.random.seed(4982)
+        rng = np.random.RandomState(4982)
 
-        meas_in_1 = pm.aesaraf.floatX(2 + 4 * np.random.randn(100))
-        meas_in_2 = pm.aesaraf.floatX(5 + 4 * np.random.randn(100))
-        with pm.Model() as model:
-            mu_in_1 = pm.Normal("mu_in_1", 0, 1)
-            sigma_in_1 = pm.HalfNormal("sd_in_1", 1)
-            mu_in_2 = pm.Normal("mu_in_2", 0, 1)
-            sigma_in_2 = pm.HalfNormal("sd__in_2", 1)
+        meas_in_1 = pm.aesaraf.floatX(2 + 4 * rng.randn(100))
+        meas_in_2 = pm.aesaraf.floatX(5 + 4 * rng.randn(100))
+        with pm.Model(rng_seeder=rng) as model:
+            mu_in_1 = pm.Normal("mu_in_1", 0, 1, initval=0)
+            sigma_in_1 = pm.HalfNormal("sd_in_1", 1, initval=1)
+            mu_in_2 = pm.Normal("mu_in_2", 0, 1, initval=0)
+            sigma_in_2 = pm.HalfNormal("sd__in_2", 1, initval=1)
 
             in_1 = pm.Normal("in_1", mu_in_1, sigma_in_1, observed=meas_in_1)
             in_2 = pm.Normal("in_2", mu_in_2, sigma_in_2, observed=meas_in_2)
@@ -882,7 +882,7 @@ def test_default_sample_nuts_jitter(init, start, expectation, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "testval, jitter_max_retries, expectation",
+    "initval, jitter_max_retries, expectation",
     [
         (0, 0, pytest.raises(SamplingError)),
         (0, 1, pytest.raises(SamplingError)),
@@ -891,9 +891,9 @@ def test_default_sample_nuts_jitter(init, start, expectation, monkeypatch):
         (1, 0, does_not_raise()),
     ],
 )
-def test_init_jitter(testval, jitter_max_retries, expectation):
+def test_init_jitter(initval, jitter_max_retries, expectation):
     with pm.Model() as m:
-        pm.HalfNormal("x", transform=None, testval=testval)
+        pm.HalfNormal("x", transform=None, initval=initval)
 
     with expectation:
         # Starting value is negative (invalid) when np.random.rand returns 0 (jitter = -1)
@@ -970,13 +970,11 @@ class TestSamplePriorPredictive(SeededTest):
         assert sim_ppc["obs"].shape == (20,) + mn_data.shape
 
     def test_layers(self):
-        with pm.Model() as model:
+        with pm.Model(rng_seeder=232093) as model:
             a = pm.Uniform("a", lower=0, upper=1, size=10)
             b = pm.Binomial("b", n=1, p=a, size=10)
 
-        model.default_rng.get_value(borrow=True).seed(232093)
-
-        b_sampler = aesara.function([], b)
+        b_sampler = compile_rv_inplace([], b, mode="FAST_RUN")
         avg = np.stack([b_sampler() for i in range(10000)]).mean(0)
         npt.assert_array_almost_equal(avg, 0.5 * np.ones((10,)), decimal=2)
 
@@ -1044,7 +1042,6 @@ class TestSamplePriorPredictive(SeededTest):
             prior = pm.sample_prior_predictive(10)
         assert prior["mu"].shape == (10, 5)
 
-    @pytest.mark.xfail(reason="ZeroInflatedPoisson not refactored for v4")
     def test_zeroinflatedpoisson(self):
         with pm.Model():
             theta = pm.Beta("theta", alpha=1, beta=1)
@@ -1087,16 +1084,15 @@ class TestSamplePosteriorPredictive:
 
         with pmodel:
             prior = pm.sample_prior_predictive(samples=20)
-
-        idat = pm.to_inference_data(trace, prior=prior)
+            idat = pm.to_inference_data(trace, prior=prior)
 
         with pmodel:
             pp = pm.sample_posterior_predictive(idat.prior, var_names=["d"])
 
     def test_sample_from_xarray_posterior(self, point_list_arg_bug_fixture):
         pmodel, trace = point_list_arg_bug_fixture
-        idat = pm.to_inference_data(trace)
         with pmodel:
+            idat = pm.to_inference_data(trace)
             pp = pm.sample_posterior_predictive(idat.posterior, var_names=["d"])
 
 

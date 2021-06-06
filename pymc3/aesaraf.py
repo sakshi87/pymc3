@@ -31,6 +31,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from aesara import config, scalar
+from aesara.compile.mode import Mode, get_mode
 from aesara.gradient import grad
 from aesara.graph.basic import (
     Apply,
@@ -45,10 +46,12 @@ from aesara.graph.op import Op, compute_test_value
 from aesara.sandbox.rng_mrg import MRG_RandomStream as RandomStream
 from aesara.tensor.elemwise import Elemwise
 from aesara.tensor.random.op import RandomVariable
+from aesara.tensor.shape import SpecifyShape
 from aesara.tensor.sharedvar import SharedVariable
 from aesara.tensor.subtensor import AdvancedIncSubtensor, AdvancedIncSubtensor1
 from aesara.tensor.var import TensorVariable
 
+from pymc3.exceptions import ShapeError
 from pymc3.vartypes import continuous_types, int_types, isgenerator, typefilter
 
 PotentialShapeType = Union[
@@ -86,7 +89,13 @@ def pandas_to_array(data):
     if hasattr(data, "to_numpy") and hasattr(data, "isnull"):
         # typically, but not limited to pandas objects
         vals = data.to_numpy()
-        mask = data.isnull().to_numpy()
+        null_data = data.isnull()
+        if hasattr(null_data, "to_numpy"):
+            # pandas Series
+            mask = null_data.to_numpy()
+        else:
+            # pandas Index
+            mask = null_data
         if mask.any():
             # there are missing values
             ret = np.ma.MaskedArray(vals, mask)
@@ -146,6 +155,16 @@ def change_rv_size(
         Expand the existing size by `new_size`.
 
     """
+    # Check the dimensionality of the `new_size` kwarg
+    new_size_ndim = np.ndim(new_size)
+    if new_size_ndim > 1:
+        raise ShapeError("The `new_size` must be ≤1-dimensional.", actual=new_size_ndim)
+    elif new_size_ndim == 0:
+        new_size = (new_size,)
+
+    # Extract the RV node that is to be resized, together with its inputs, name and tag
+    if isinstance(rv_var.owner.op, SpecifyShape):
+        rv_var = rv_var.owner.inputs[0]
     rv_node = rv_var.owner
     rng, size, dtype, *dist_params = rv_node.inputs
     name = rv_var.name
@@ -154,7 +173,11 @@ def change_rv_size(
     if expand:
         if rv_node.op.ndim_supp == 0 and at.get_vector_length(size) == 0:
             size = rv_node.op._infer_shape(size, dist_params)
-        new_size = tuple(np.atleast_1d(new_size)) + tuple(size)
+        new_size = tuple(new_size) + tuple(size)
+
+    # Make sure the new size is a tensor. This dtype-aware conversion helps
+    # to not unnecessarily pick up a `Cast` in some cases (see #4652).
+    new_size = at.as_tensor(new_size, ndim=1, dtype="int64")
 
     new_rv_node = rv_node.op.make_node(rng, new_size, dtype, *dist_params)
     rv_var = new_rv_node.outputs[-1]
@@ -851,3 +874,16 @@ def take_along_axis(arr, indices, axis=0):
 
     # use the fancy index
     return arr[_make_along_axis_idx(arr_shape, indices, _axis)]
+
+
+def compile_rv_inplace(inputs, outputs, mode=None, **kwargs):
+    """Use ``aesara.function`` with the random_make_inplace optimization always enabled.
+
+    Using this function ensures that compiled functions containing random
+    variables will produce new samples on each call.
+    """
+    mode = get_mode(mode)
+    opt_qry = mode.provided_optimizer.including("random_make_inplace")
+    mode = Mode(linker=mode.linker, optimizer=opt_qry)
+    aesara_function = aesara.function(inputs, outputs, mode=mode, **kwargs)
+    return aesara_function

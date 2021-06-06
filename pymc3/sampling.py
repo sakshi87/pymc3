@@ -25,19 +25,19 @@ from collections import defaultdict
 from copy import copy, deepcopy
 from typing import Any, Dict, Iterable, List, Optional, Set, Union, cast
 
-import aesara
 import aesara.gradient as tg
 import numpy as np
 import packaging
 import xarray
 
+from aesara.compile.mode import Mode
 from aesara.tensor.sharedvar import SharedVariable
 from arviz import InferenceData
 from fastprogress.fastprogress import progress_bar
 
 import pymc3 as pm
 
-from pymc3.aesaraf import change_rv_size, inputvars, walk_model
+from pymc3.aesaraf import change_rv_size, compile_rv_inplace, inputvars, walk_model
 from pymc3.backends.arviz import _DefaultTrace
 from pymc3.backends.base import BaseTrace, MultiTrace
 from pymc3.backends.ndarray import NDArray
@@ -339,7 +339,8 @@ def sample(
         time until completion ("expected time of arrival"; ETA).
     model : Model (optional if in ``with`` context)
     random_seed : int or list of ints
-        A list is accepted if ``cores`` is greater than one.
+        Random seed(s) used by the sampling steps.  A list is accepted if
+        ``cores`` is greater than one.
     discard_tuned_samples : bool
         Whether to discard posterior samples of the tune interval.
     compute_convergence_checks : bool, default=True
@@ -467,10 +468,6 @@ def sample(
             np.random.seed(random_seed)
         random_seed = [np.random.randint(2 ** 30) for _ in range(chains)]
 
-    # TODO: We need to do something about multiple seeds and this single,
-    # shared RNG state.
-    model.default_rng.get_value(borrow=True).seed(random_seed)
-
     if not isinstance(random_seed, abc.Iterable):
         raise TypeError("Invalid value for `random_seed`. Must be tuple, list or int")
 
@@ -480,6 +477,7 @@ def sample(
             " complications in your downstream analysis. Please consider to switch to `InferenceData`:\n"
             "`pm.sample(..., return_inferencedata=True)`",
             UserWarning,
+            stacklevel=2,
         )
 
     if return_inferencedata is None:
@@ -614,6 +612,7 @@ def sample(
                     "DEMetropolis should be used with more chains than dimensions! "
                     "(The model has {} dimensions.)".format(initial_point_model_size),
                     UserWarning,
+                    stacklevel=2,
                 )
             _print_step_hierarchy(step)
             trace = _sample_population(parallelize=cores > 1, **sample_args)
@@ -666,7 +665,9 @@ def sample(
 
     if compute_convergence_checks:
         if draws - tune < 100:
-            warnings.warn("The number of samples is too small to check convergence reliably.")
+            warnings.warn(
+                "The number of samples is too small to check convergence reliably.", stacklevel=2
+            )
         else:
             trace.report._run_convergence_checks(idata, model)
     trace.report._log_summary()
@@ -680,6 +681,11 @@ def sample(
 def _check_start_shape(model, start):
     if not isinstance(start, dict):
         raise TypeError("start argument must be a dict or an array-like of dicts")
+
+    # Filter "non-input" variables
+    initial_point = model.initial_point
+    start = {k: v for k, v in start.items() if k in initial_point}
+
     e = ""
     for var in model.basic_RVs:
         var_shape = model.fastfn(var.shape)(start)
@@ -995,9 +1001,7 @@ def _iter_sample(
     """
     model = modelcontext(model)
     draws = int(draws)
-    if random_seed is not None:
-        # np.random.seed(random_seed)
-        model.default_rng.get_value(borrow=True).seed(random_seed)
+
     if draws < 1:
         raise ValueError("Argument `draws` must be greater than 0.")
 
@@ -1264,9 +1268,7 @@ def _prepare_iter_population(
     nchains = len(chains)
     model = modelcontext(model)
     draws = int(draws)
-    if random_seed is not None:
-        # np.random.seed(random_seed)
-        model.default_rng.get_value(borrow=True).seed(random_seed)
+
     if draws < 1:
         raise ValueError("Argument `draws` should be above 0.")
 
@@ -1582,6 +1584,7 @@ def sample_posterior_predictive(
     keep_size: Optional[bool] = False,
     random_seed=None,
     progressbar: bool = True,
+    mode: Optional[Union[str, Mode]] = None,
 ) -> Dict[str, np.ndarray]:
     """Generate posterior predictive samples from a model given a trace.
 
@@ -1615,6 +1618,8 @@ def sample_posterior_predictive(
         Whether or not to display a progress bar in the command line. The bar shows the percentage
         of completion, the sampling speed in samples per second (SPS), and the estimated remaining
         time until completion ("expected time of arrival"; ETA).
+    mode:
+        The mode used by ``aesara.function`` to compile the graph.
 
     Returns
     -------
@@ -1664,7 +1669,8 @@ def sample_posterior_predictive(
         warnings.warn(
             "samples parameter is smaller than nchains times ndraws, some draws "
             "and/or chains may not be represented in the returned posterior "
-            "predictive sample"
+            "predictive sample",
+            stacklevel=2,
         )
 
     model = modelcontext(model)
@@ -1674,6 +1680,7 @@ def sample_posterior_predictive(
             "The effect of Potentials on other parameters is ignored during posterior predictive sampling. "
             "This is likely to lead to invalid or biased predictive samples.",
             UserWarning,
+            stacklevel=2,
         )
 
     if var_names is not None:
@@ -1682,8 +1689,12 @@ def sample_posterior_predictive(
         vars_ = model.observed_RVs + model.auto_deterministics
 
     if random_seed is not None:
-        # np.random.seed(random_seed)
-        model.default_rng.get_value(borrow=True).seed(random_seed)
+        warnings.warn(
+            "In this version, RNG seeding is managed by the Model objects. "
+            "See the `rng_seeder` argument in Model's constructor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     indices = np.arange(samples)
 
@@ -1719,12 +1730,13 @@ def sample_posterior_predictive(
     if size is not None:
         vars_to_sample = [change_rv_size(v, size, expand=True) for v in vars_to_sample]
 
-    sampler_fn = aesara.function(
+    sampler_fn = compile_rv_inplace(
         inputs,
         vars_to_sample,
         allow_input_downcast=True,
         accept_inplace=True,
         on_unused_input="ignore",
+        mode=mode,
     )
 
     ppc_trace_t = _DefaultTrace(samples)
@@ -1805,8 +1817,6 @@ def sample_posterior_predictive_w(
         Dictionary with the variables as keys. The values corresponding to the
         posterior predictive samples from the weighted models.
     """
-    # np.random.seed(random_seed)
-
     if isinstance(traces[0], InferenceData):
         n_samples = [
             trace.posterior.sizes["chain"] * trace.posterior.sizes["draw"] for trace in traces
@@ -1821,14 +1831,21 @@ def sample_posterior_predictive_w(
     if models is None:
         models = [modelcontext(models)] * len(traces)
 
+    if random_seed:
+        warnings.warn(
+            "In this version, RNG seeding is managed by the Model objects. "
+            "See the `rng_seeder` argument in Model's constructor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     for model in models:
-        if random_seed:
-            model.default_rng.get_value(borrow=True).seed(random_seed)
         if model.potentials:
             warnings.warn(
                 "The effect of Potentials on other parameters is ignored during posterior predictive sampling. "
                 "This is likely to lead to invalid or biased predictive samples.",
                 UserWarning,
+                stacklevel=2,
             )
             break
 
@@ -1925,6 +1942,7 @@ def sample_prior_predictive(
     model: Optional[Model] = None,
     var_names: Optional[Iterable[str]] = None,
     random_seed=None,
+    mode: Optional[Union[str, Mode]] = None,
 ) -> Dict[str, np.ndarray]:
     """Generate samples from the prior predictive distribution.
 
@@ -1938,6 +1956,8 @@ def sample_prior_predictive(
         samples. Defaults to both observed and unobserved RVs.
     random_seed : int
         Seed for the random number generator.
+    mode:
+        The mode used by ``aesara.function`` to compile the graph.
 
     Returns
     -------
@@ -1952,6 +1972,7 @@ def sample_prior_predictive(
             "The effect of Potentials on other parameters is ignored during prior predictive sampling. "
             "This is likely to lead to invalid or biased predictive samples.",
             UserWarning,
+            stacklevel=2,
         )
 
     if var_names is None:
@@ -1964,19 +1985,22 @@ def sample_prior_predictive(
         vars_ = set(var_names)
 
     if random_seed is not None:
-        # np.random.seed(random_seed)
-        model.default_rng.get_value(borrow=True).seed(random_seed)
+        warnings.warn(
+            "In this version, RNG seeding is managed by the Model objects. "
+            "See the `rng_seeder` argument in Model's constructor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     names = get_default_varnames(vars_, include_transformed=False)
 
     vars_to_sample = [model[name] for name in names]
     inputs = [i for i in inputvars(vars_to_sample) if not isinstance(i, SharedVariable)]
-    sampler_fn = aesara.function(
-        inputs,
-        vars_to_sample,
-        allow_input_downcast=True,
-        accept_inplace=True,
+
+    sampler_fn = compile_rv_inplace(
+        inputs, vars_to_sample, allow_input_downcast=True, accept_inplace=True, mode=mode
     )
+
     values = zip(*[sampler_fn() for i in range(samples)])
 
     data = {k: np.stack(v) for k, v in zip(names, values)}
@@ -2114,8 +2138,6 @@ def init_nuts(
 
     if random_seed is not None:
         random_seed = int(np.atleast_1d(random_seed)[0])
-        # np.random.seed(random_seed)
-        model.default_rng.get_value(borrow=True).seed(random_seed)
 
     cb = [
         pm.callbacks.CheckParametersConvergence(tolerance=1e-2, diff="absolute"),

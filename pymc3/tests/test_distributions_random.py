@@ -11,11 +11,11 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-
+import functools
 import itertools
-import sys
 
 from contextlib import ExitStack as does_not_raise
+from typing import Callable, List, Optional
 
 import aesara
 import numpy as np
@@ -24,37 +24,37 @@ import numpy.testing as npt
 import pytest
 import scipy.stats as st
 
-from scipy import linalg
+from numpy.testing import assert_almost_equal, assert_array_almost_equal
+from packaging.version import parse
+from scipy import __version__ as scipy_version
 from scipy.special import expit
 
 import pymc3 as pm
 
 from pymc3.aesaraf import change_rv_size, floatX, intX
+from pymc3.distributions.continuous import get_tau_sigma
 from pymc3.distributions.dist_math import clipped_beta_rvs
+from pymc3.distributions.multivariate import quaddist_matrix
 from pymc3.distributions.shape_utils import to_tuple
 from pymc3.exceptions import ShapeError
 from pymc3.tests.helpers import SeededTest, select_by_precision
 from pymc3.tests.test_distributions import (
     Domain,
-    I,
     Nat,
-    NatSmall,
     PdMatrix,
     PdMatrixChol,
-    PdMatrixCholUpper,
     R,
     RandomPdMatrix,
     RealMatrix,
     Rplus,
     Rplusbig,
-    Rplusdunif,
-    Runif,
     Simplex,
-    Unit,
     Vector,
     build_model,
     product,
 )
+
+SCIPY_VERSION = parse(scipy_version)
 
 
 def pymc3_random(
@@ -158,7 +158,7 @@ class BaseTestCases:
             self.model = pm.Model()
 
         def get_random_variable(self, shape, with_vector_params=False, name=None):
-            """ Creates a RandomVariable of the parametrized distribution. """
+            """Creates a RandomVariable of the parametrized distribution."""
             if with_vector_params:
                 params = {
                     key: value * np.ones(self.shape, dtype=np.dtype(type(value)))
@@ -187,16 +187,15 @@ class BaseTestCases:
 
         @staticmethod
         def sample_random_variable(random_variable, size):
-            """ Draws samples from a RandomVariable using its .random() method. """
-            if size is None:
-                return random_variable.eval()
-            else:
-                return change_rv_size(random_variable, size, expand=True).eval()
+            """ Draws samples from a RandomVariable. """
+            if size:
+                random_variable = change_rv_size(random_variable, size, expand=True)
+            return random_variable.eval()
 
         @pytest.mark.parametrize("size", [None, (), 1, (1,), 5, (4, 5)], ids=str)
         @pytest.mark.parametrize("shape", [None, ()], ids=str)
         def test_scalar_distribution_shape(self, shape, size):
-            """ Draws samples of different [size] from a scalar [shape] RV. """
+            """Draws samples of different [size] from a scalar [shape] RV."""
             rv = self.get_random_variable(shape)
             exp_shape = self.default_shape if shape is None else tuple(np.atleast_1d(shape))
             exp_size = self.default_size if size is None else tuple(np.atleast_1d(size))
@@ -216,7 +215,7 @@ class BaseTestCases:
             "shape", [None, (), (1,), (1, 1), (1, 2), (10, 11, 1), (9, 10, 2)], ids=str
         )
         def test_scalar_sample_shape(self, shape, size):
-            """ Draws samples of scalar [size] from a [shape] RV. """
+            """Draws samples of scalar [size] from a [shape] RV."""
             rv = self.get_random_variable(shape)
             exp_shape = self.default_shape if shape is None else tuple(np.atleast_1d(shape))
             exp_size = self.default_size if size is None else tuple(np.atleast_1d(size))
@@ -247,12 +246,6 @@ class TestGaussianRandomWalk(BaseTestCases.BaseTestCase):
     default_shape = (1,)
 
 
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestNormal(BaseTestCases.BaseTestCase):
-    distribution = pm.Normal
-    params = {"mu": 0.0, "tau": 1.0}
-
-
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
 class TestTruncatedNormal(BaseTestCases.BaseTestCase):
     distribution = pm.TruncatedNormal
@@ -272,56 +265,9 @@ class TestTruncatedNormalUpper(BaseTestCases.BaseTestCase):
 
 
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestSkewNormal(BaseTestCases.BaseTestCase):
-    distribution = pm.SkewNormal
-    params = {"mu": 0.0, "sigma": 1.0, "alpha": 5.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestHalfNormal(BaseTestCases.BaseTestCase):
-    distribution = pm.HalfNormal
-    params = {"tau": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestUniform(BaseTestCases.BaseTestCase):
-    distribution = pm.Uniform
-    params = {"lower": 0.0, "upper": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestTriangular(BaseTestCases.BaseTestCase):
-    distribution = pm.Triangular
-    params = {"c": 0.5, "lower": 0.0, "upper": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
 class TestWald(BaseTestCases.BaseTestCase):
     distribution = pm.Wald
     params = {"mu": 1.0, "lam": 1.0, "alpha": 0.0}
-
-
-class TestBeta(BaseTestCases.BaseTestCase):
-    distribution = pm.Beta
-    params = {"alpha": 1.0, "beta": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestKumaraswamy(BaseTestCases.BaseTestCase):
-    distribution = pm.Kumaraswamy
-    params = {"a": 1.0, "b": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestExponential(BaseTestCases.BaseTestCase):
-    distribution = pm.Exponential
-    params = {"lam": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestLaplace(BaseTestCases.BaseTestCase):
-    distribution = pm.Laplace
-    params = {"mu": 1.0, "b": 1.0}
 
 
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
@@ -331,128 +277,15 @@ class TestAsymmetricLaplace(BaseTestCases.BaseTestCase):
 
 
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestLognormal(BaseTestCases.BaseTestCase):
-    distribution = pm.Lognormal
-    params = {"mu": 1.0, "tau": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestStudentT(BaseTestCases.BaseTestCase):
-    distribution = pm.StudentT
-    params = {"nu": 5.0, "mu": 0.0, "lam": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestCauchy(BaseTestCases.BaseTestCase):
-    distribution = pm.Cauchy
-    params = {"alpha": 1.0, "beta": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestHalfCauchy(BaseTestCases.BaseTestCase):
-    distribution = pm.HalfCauchy
-    params = {"beta": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestGamma(BaseTestCases.BaseTestCase):
-    distribution = pm.Gamma
-    params = {"alpha": 1.0, "beta": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestInverseGamma(BaseTestCases.BaseTestCase):
-    distribution = pm.InverseGamma
-    params = {"alpha": 0.5, "beta": 0.5}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
 class TestChiSquared(BaseTestCases.BaseTestCase):
     distribution = pm.ChiSquared
     params = {"nu": 2.0}
 
 
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestWeibull(BaseTestCases.BaseTestCase):
-    distribution = pm.Weibull
-    params = {"alpha": 1.0, "beta": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
 class TestExGaussian(BaseTestCases.BaseTestCase):
     distribution = pm.ExGaussian
     params = {"mu": 0.0, "sigma": 1.0, "nu": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestVonMises(BaseTestCases.BaseTestCase):
-    distribution = pm.VonMises
-    params = {"mu": 0.0, "kappa": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestGumbel(BaseTestCases.BaseTestCase):
-    distribution = pm.Gumbel
-    params = {"mu": 0.0, "beta": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestLogistic(BaseTestCases.BaseTestCase):
-    distribution = pm.Logistic
-    params = {"mu": 0.0, "s": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestLogitNormal(BaseTestCases.BaseTestCase):
-    distribution = pm.LogitNormal
-    params = {"mu": 0.0, "sigma": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestBinomial(BaseTestCases.BaseTestCase):
-    distribution = pm.Binomial
-    params = {"n": 5, "p": 0.5}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestBetaBinomial(BaseTestCases.BaseTestCase):
-    distribution = pm.BetaBinomial
-    params = {"n": 5, "alpha": 1.0, "beta": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestBernoulli(BaseTestCases.BaseTestCase):
-    distribution = pm.Bernoulli
-    params = {"p": 0.5}
-
-
-class TestDiscreteWeibull(BaseTestCases.BaseTestCase):
-    distribution = pm.DiscreteWeibull
-    params = {"q": 0.25, "beta": 2.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestPoisson(BaseTestCases.BaseTestCase):
-    distribution = pm.Poisson
-    params = {"mu": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestNegativeBinomial(BaseTestCases.BaseTestCase):
-    distribution = pm.NegativeBinomial
-    params = {"mu": 1.0, "alpha": 1.0}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestConstant(BaseTestCases.BaseTestCase):
-    distribution = pm.Constant
-    params = {"c": 3}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestZeroInflatedPoisson(BaseTestCases.BaseTestCase):
-    distribution = pm.ZeroInflatedPoisson
-    params = {"theta": 1.0, "psi": 0.3}
 
 
 @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
@@ -467,67 +300,893 @@ class TestZeroInflatedBinomial(BaseTestCases.BaseTestCase):
     params = {"n": 10, "p": 0.6, "psi": 0.3}
 
 
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestDiscreteUniform(BaseTestCases.BaseTestCase):
-    distribution = pm.DiscreteUniform
-    params = {"lower": 0.0, "upper": 10.0}
+class BaseTestDistribution(SeededTest):
+    pymc_dist: Optional[Callable] = None
+    pymc_dist_params = dict()
+    reference_dist: Optional[Callable] = None
+    reference_dist_params = dict()
+    expected_rv_op_params = dict()
+    tests_to_run = []
+    size = 15
+    decimal = select_by_precision(float64=6, float32=3)
+
+    sizes_to_check: Optional[List] = None
+    sizes_expected: Optional[List] = None
+    repeated_params_shape = 5
+
+    def test_distribution(self):
+        self.validate_tests_list()
+        self._instantiate_pymc_rv()
+        if self.reference_dist is not None:
+            self.reference_dist_draws = self.reference_dist()(
+                size=self.size, **self.reference_dist_params
+            )
+        for check_name in self.tests_to_run:
+            getattr(self, check_name)()
+
+    def _instantiate_pymc_rv(self, dist_params=None):
+        params = dist_params if dist_params else self.pymc_dist_params
+        self.pymc_rv = self.pymc_dist.dist(
+            **params, size=self.size, rng=aesara.shared(self.get_random_state(reset=True))
+        )
+
+    def check_pymc_draws_match_reference(self):
+        # need to re-instantiate it to make sure that the order of drawings match the reference distribution one
+        # self._instantiate_pymc_rv()
+        assert_array_almost_equal(
+            self.pymc_rv.eval(), self.reference_dist_draws, decimal=self.decimal
+        )
+
+    def check_pymc_params_match_rv_op(self):
+        aesera_dist_inputs = self.pymc_rv.get_parents()[0].inputs[3:]
+        assert len(self.expected_rv_op_params) == len(aesera_dist_inputs)
+        for (expected_name, expected_value), actual_variable in zip(
+            self.expected_rv_op_params.items(), aesera_dist_inputs
+        ):
+            assert_almost_equal(expected_value, actual_variable.eval(), decimal=self.decimal)
+
+    def check_rv_size(self):
+        # test sizes
+        sizes_to_check = self.sizes_to_check or [None, (), 1, (1,), 5, (4, 5), (2, 4, 2)]
+        sizes_expected = self.sizes_expected or [(), (), (1,), (1,), (5,), (4, 5), (2, 4, 2)]
+        for size, expected in zip(sizes_to_check, sizes_expected):
+            pymc_rv = self.pymc_dist.dist(**self.pymc_dist_params, size=size)
+            actual = tuple(pymc_rv.shape.eval())
+            assert actual == expected, f"size={size}, expected={expected}, actual={actual}"
+
+        # test multi-parameters sampling for univariate distributions (with univariate inputs)
+        if (
+            self.pymc_dist.rv_op.ndim_supp == 0
+            and self.pymc_dist.rv_op.ndims_params
+            and sum(self.pymc_dist.rv_op.ndims_params) == 0
+        ):
+            params = {
+                k: p * np.ones(self.repeated_params_shape) for k, p in self.pymc_dist_params.items()
+            }
+            self._instantiate_pymc_rv(params)
+            sizes_to_check = [None, self.repeated_params_shape, (5, self.repeated_params_shape)]
+            sizes_expected = [
+                (self.repeated_params_shape,),
+                (self.repeated_params_shape,),
+                (5, self.repeated_params_shape),
+            ]
+            for size, expected in zip(sizes_to_check, sizes_expected):
+                pymc_rv = self.pymc_dist.dist(**params, size=size)
+                actual = tuple(pymc_rv.shape.eval())
+                assert actual == expected
+
+    def validate_tests_list(self):
+        assert len(self.tests_to_run) == len(
+            set(self.tests_to_run)
+        ), "There are duplicates in the list of tests_to_run"
 
 
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestGeometric(BaseTestCases.BaseTestCase):
-    distribution = pm.Geometric
-    params = {"p": 0.5}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestHyperGeometric(BaseTestCases.BaseTestCase):
-    distribution = pm.HyperGeometric
-    params = {"N": 50, "k": 25, "n": 10}
-
-
-@pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-class TestMoyal(BaseTestCases.BaseTestCase):
-    distribution = pm.Moyal
-    params = {"mu": 0.0, "sigma": 1.0}
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestCategorical(BaseTestCases.BaseTestCase):
-    distribution = pm.Categorical
-    params = {"p": np.ones(BaseTestCases.BaseTestCase.shape)}
-
-    def get_random_variable(
-        self, shape, with_vector_params=False, **kwargs
-    ):  # don't transform categories
-        return super().get_random_variable(shape, with_vector_params=False, **kwargs)
-
-    def test_probability_vector_shape(self):
-        """Check that if a 2d array of probabilities are passed to categorical correct shape is returned"""
-        p = np.ones((10, 5))
-        assert pm.Categorical.dist(p=p).random().shape == (10,)
-        assert pm.Categorical.dist(p=p).random(size=4).shape == (4, 10)
-        p = np.ones((3, 7, 5))
-        assert pm.Categorical.dist(p=p).random().shape == (3, 7)
-        assert pm.Categorical.dist(p=p).random(size=4).shape == (4, 3, 7)
-
-
-@pytest.mark.skip(reason="This test is covered by Aesara")
-class TestDirichlet(SeededTest):
-    @pytest.mark.parametrize(
-        "shape, size",
-        [
-            ((2), (1)),
-            ((2), (2)),
-            ((2, 2), (2, 100)),
-            ((3, 4), (3, 4)),
-            ((3, 4), (3, 4, 100)),
-            ((3, 4), (100)),
-            ((3, 4), (1)),
-        ],
+def seeded_scipy_distribution_builder(dist_name: str) -> Callable:
+    return lambda self: functools.partial(
+        getattr(st, dist_name).rvs, random_state=self.get_random_state()
     )
-    def test_dirichlet_random_shape(self, shape, size):
-        out_shape = to_tuple(size) + to_tuple(shape)
-        assert pm.Dirichlet.dist(a=np.ones(shape)).random(size=size).shape == out_shape
+
+
+def seeded_numpy_distribution_builder(dist_name: str) -> Callable:
+    return lambda self: functools.partial(
+        getattr(np.random.RandomState, dist_name), self.get_random_state()
+    )
+
+
+class TestFlat(BaseTestDistribution):
+    pymc_dist = pm.Flat
+    pymc_dist_params = {}
+    expected_rv_op_params = {}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+        "check_not_implemented",
+    ]
+
+    def check_not_implemented(self):
+        with pytest.raises(NotImplementedError):
+            self.pymc_rv.eval()
+
+
+class TestHalfFlat(BaseTestDistribution):
+    pymc_dist = pm.HalfFlat
+    pymc_dist_params = {}
+    expected_rv_op_params = {}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+        "check_not_implemented",
+    ]
+
+    def check_not_implemented(self):
+        with pytest.raises(NotImplementedError):
+            self.pymc_rv.eval()
+
+
+class TestDiscreteWeibull(BaseTestDistribution):
+    def discrete_weibul_rng_fn(self, size, q, beta, uniform_rng_fct):
+        return np.ceil(np.power(np.log(1 - uniform_rng_fct(size=size)) / np.log(q), 1.0 / beta)) - 1
+
+    def seeded_discrete_weibul_rng_fn(self):
+        uniform_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "uniform"), self.get_random_state()
+        )
+        return functools.partial(self.discrete_weibul_rng_fn, uniform_rng_fct=uniform_rng_fct)
+
+    pymc_dist = pm.DiscreteWeibull
+    pymc_dist_params = {"q": 0.25, "beta": 2.0}
+    expected_rv_op_params = {"q": 0.25, "beta": 2.0}
+    reference_dist_params = {"q": 0.25, "beta": 2.0}
+    reference_dist = seeded_discrete_weibul_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestPareto(BaseTestDistribution):
+    pymc_dist = pm.Pareto
+    pymc_dist_params = {"alpha": 3.0, "m": 2.0}
+    expected_rv_op_params = {"alpha": 3.0, "m": 2.0}
+    reference_dist_params = {"b": 3.0, "scale": 2.0}
+    reference_dist = seeded_scipy_distribution_builder("pareto")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestLaplace(BaseTestDistribution):
+    pymc_dist = pm.Laplace
+    pymc_dist_params = {"mu": 0.0, "b": 1.0}
+    expected_rv_op_params = {"mu": 0.0, "b": 1.0}
+    reference_dist_params = {"loc": 0.0, "scale": 1.0}
+    reference_dist = seeded_scipy_distribution_builder("laplace")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestGumbel(BaseTestDistribution):
+    pymc_dist = pm.Gumbel
+    pymc_dist_params = {"mu": 1.5, "beta": 3.0}
+    expected_rv_op_params = {"mu": 1.5, "beta": 3.0}
+    reference_dist_params = {"loc": 1.5, "scale": 3.0}
+    reference_dist = seeded_scipy_distribution_builder("gumbel_r")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestStudentT(BaseTestDistribution):
+    pymc_dist = pm.StudentT
+    pymc_dist_params = {"nu": 5.0, "mu": -1.0, "sigma": 2.0}
+    expected_rv_op_params = {"nu": 5.0, "mu": -1.0, "sigma": 2.0}
+    reference_dist_params = {"df": 5.0, "loc": -1.0, "scale": 2.0}
+    reference_dist = seeded_scipy_distribution_builder("t")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestMoyal(BaseTestDistribution):
+    pymc_dist = pm.Moyal
+    pymc_dist_params = {"mu": 0.0, "sigma": 1.0}
+    expected_rv_op_params = {"mu": 0.0, "sigma": 1.0}
+    reference_dist_params = {"loc": 0.0, "scale": 1.0}
+    reference_dist = seeded_scipy_distribution_builder("moyal")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestKumaraswamy(BaseTestDistribution):
+    def kumaraswamy_rng_fn(self, a, b, size, uniform_rng_fct):
+        return (1 - (1 - uniform_rng_fct(size=size)) ** (1 / b)) ** (1 / a)
+
+    def seeded_kumaraswamy_rng_fn(self):
+        uniform_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "uniform"), self.get_random_state()
+        )
+        return functools.partial(self.kumaraswamy_rng_fn, uniform_rng_fct=uniform_rng_fct)
+
+    pymc_dist = pm.Kumaraswamy
+    pymc_dist_params = {"a": 1.0, "b": 1.0}
+    expected_rv_op_params = {"a": 1.0, "b": 1.0}
+    reference_dist_params = {"a": 1.0, "b": 1.0}
+    reference_dist = seeded_kumaraswamy_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestSkewNormal(BaseTestDistribution):
+    pymc_dist = pm.SkewNormal
+    pymc_dist_params = {"mu": 0.0, "sigma": 1.0, "alpha": 5.0}
+    expected_rv_op_params = {"mu": 0.0, "sigma": 1.0, "alpha": 5.0}
+    reference_dist_params = {"loc": 0.0, "scale": 1.0, "a": 5.0}
+    reference_dist = seeded_scipy_distribution_builder("skewnorm")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestSkewNormalTau(BaseTestDistribution):
+    pymc_dist = pm.SkewNormal
+    tau, sigma = get_tau_sigma(tau=2.0)
+    pymc_dist_params = {"mu": 0.0, "tau": tau, "alpha": 5.0}
+    expected_rv_op_params = {"mu": 0.0, "sigma": sigma, "alpha": 5.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestRice(BaseTestDistribution):
+    pymc_dist = pm.Rice
+    b, sigma = 1, 2
+    pymc_dist_params = {"b": b, "sigma": sigma}
+    expected_rv_op_params = {"b": b, "sigma": sigma}
+    reference_dist_params = {"b": b, "scale": sigma}
+    reference_dist = seeded_scipy_distribution_builder("rice")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestRiceNu(BaseTestDistribution):
+    pymc_dist = pm.Rice
+    nu = sigma = 2
+    pymc_dist_params = {"nu": nu, "sigma": sigma}
+    expected_rv_op_params = {"b": nu / sigma, "sigma": sigma}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestStudentTLam(BaseTestDistribution):
+    pymc_dist = pm.StudentT
+    lam, sigma = get_tau_sigma(tau=2.0)
+    pymc_dist_params = {"nu": 5.0, "mu": -1.0, "lam": lam}
+    expected_rv_op_params = {"nu": 5.0, "mu": -1.0, "lam": sigma}
+    reference_dist_params = {"df": 5.0, "loc": -1.0, "scale": sigma}
+    reference_dist = seeded_scipy_distribution_builder("t")
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestNormal(BaseTestDistribution):
+    pymc_dist = pm.Normal
+    pymc_dist_params = {"mu": 5.0, "sigma": 10.0}
+    expected_rv_op_params = {"mu": 5.0, "sigma": 10.0}
+    reference_dist_params = {"loc": 5.0, "scale": 10.0}
+    size = 15
+    reference_dist = seeded_numpy_distribution_builder("normal")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestLogitNormal(BaseTestDistribution):
+    def logit_normal_rng_fn(self, rng, size, loc, scale):
+        return expit(st.norm.rvs(loc=loc, scale=scale, size=size, random_state=rng))
+
+    pymc_dist = pm.LogitNormal
+    pymc_dist_params = {"mu": 5.0, "sigma": 10.0}
+    expected_rv_op_params = {"mu": 5.0, "sigma": 10.0}
+    reference_dist_params = {"loc": 5.0, "scale": 10.0}
+    reference_dist = lambda self: functools.partial(
+        self.logit_normal_rng_fn, rng=self.get_random_state()
+    )
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestLogitNormalTau(BaseTestDistribution):
+    pymc_dist = pm.LogitNormal
+    tau, sigma = get_tau_sigma(tau=25.0)
+    pymc_dist_params = {"mu": 1.0, "tau": tau}
+    expected_rv_op_params = {"mu": 1.0, "sigma": sigma}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestNormalTau(BaseTestDistribution):
+    pymc_dist = pm.Normal
+    tau, sigma = get_tau_sigma(tau=25.0)
+    pymc_dist_params = {"mu": 1.0, "tau": tau}
+    expected_rv_op_params = {"mu": 1.0, "sigma": sigma}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestNormalSd(BaseTestDistribution):
+    pymc_dist = pm.Normal
+    pymc_dist_params = {"mu": 1.0, "sd": 5.0}
+    expected_rv_op_params = {"mu": 1.0, "sigma": 5.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestUniform(BaseTestDistribution):
+    pymc_dist = pm.Uniform
+    pymc_dist_params = {"lower": 0.5, "upper": 1.5}
+    expected_rv_op_params = {"lower": 0.5, "upper": 1.5}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestHalfNormal(BaseTestDistribution):
+    pymc_dist = pm.HalfNormal
+    pymc_dist_params = {"sigma": 10.0}
+    expected_rv_op_params = {"mean": 0, "sigma": 10.0}
+    reference_dist_params = {"loc": 0, "scale": 10.0}
+    reference_dist = seeded_scipy_distribution_builder("halfnorm")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestHalfNormalTau(BaseTestDistribution):
+    pymc_dist = pm.Normal
+    tau, sigma = get_tau_sigma(tau=25.0)
+    pymc_dist_params = {"tau": tau}
+    expected_rv_op_params = {"mu": 0.0, "sigma": sigma}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestHalfNormalSd(BaseTestDistribution):
+    pymc_dist = pm.Normal
+    pymc_dist_params = {"sd": 5.0}
+    expected_rv_op_params = {"mu": 0.0, "sigma": 5.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestBeta(BaseTestDistribution):
+    pymc_dist = pm.Beta
+    pymc_dist_params = {"alpha": 2.0, "beta": 5.0}
+    expected_rv_op_params = {"alpha": 2.0, "beta": 5.0}
+    reference_dist_params = {"a": 2.0, "b": 5.0}
+    size = 15
+    reference_dist = lambda self: functools.partial(
+        clipped_beta_rvs, random_state=self.get_random_state()
+    )
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestBetaMuSigma(BaseTestDistribution):
+    pymc_dist = pm.Beta
+    pymc_dist_params = {"mu": 0.5, "sigma": 0.25}
+    expected_alpha, expected_beta = pm.Beta.get_alpha_beta(
+        mu=pymc_dist_params["mu"], sigma=pymc_dist_params["sigma"]
+    )
+    expected_rv_op_params = {"alpha": expected_alpha, "beta": expected_beta}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestExponential(BaseTestDistribution):
+    pymc_dist = pm.Exponential
+    pymc_dist_params = {"lam": 10.0}
+    expected_rv_op_params = {"mu": 1.0 / pymc_dist_params["lam"]}
+    reference_dist_params = {"scale": 1.0 / pymc_dist_params["lam"]}
+    reference_dist = seeded_numpy_distribution_builder("exponential")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestCauchy(BaseTestDistribution):
+    pymc_dist = pm.Cauchy
+    pymc_dist_params = {"alpha": 2.0, "beta": 5.0}
+    expected_rv_op_params = {"alpha": 2.0, "beta": 5.0}
+    reference_dist_params = {"loc": 2.0, "scale": 5.0}
+    reference_dist = seeded_scipy_distribution_builder("cauchy")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestHalfCauchy(BaseTestDistribution):
+    pymc_dist = pm.HalfCauchy
+    pymc_dist_params = {"beta": 5.0}
+    expected_rv_op_params = {"alpha": 0.0, "beta": 5.0}
+    reference_dist_params = {"loc": 0.0, "scale": 5.0}
+    reference_dist = seeded_scipy_distribution_builder("halfcauchy")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestGamma(BaseTestDistribution):
+    pymc_dist = pm.Gamma
+    pymc_dist_params = {"alpha": 2.0, "beta": 5.0}
+    expected_rv_op_params = {"alpha": 2.0, "beta": 1 / 5.0}
+    reference_dist_params = {"shape": 2.0, "scale": 1 / 5.0}
+    reference_dist = seeded_numpy_distribution_builder("gamma")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestGammaMuSigma(BaseTestDistribution):
+    pymc_dist = pm.Gamma
+    pymc_dist_params = {"mu": 0.5, "sigma": 0.25}
+    expected_alpha, expected_beta = pm.Gamma.get_alpha_beta(
+        mu=pymc_dist_params["mu"], sigma=pymc_dist_params["sigma"]
+    )
+    expected_rv_op_params = {"alpha": expected_alpha, "beta": 1 / expected_beta}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestInverseGamma(BaseTestDistribution):
+    pymc_dist = pm.InverseGamma
+    pymc_dist_params = {"alpha": 2.0, "beta": 5.0}
+    expected_rv_op_params = {"alpha": 2.0, "beta": 5.0}
+    reference_dist_params = {"a": 2.0, "scale": 5.0}
+    reference_dist = seeded_scipy_distribution_builder("invgamma")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestInverseGammaMuSigma(BaseTestDistribution):
+    pymc_dist = pm.InverseGamma
+    pymc_dist_params = {"mu": 0.5, "sigma": 0.25}
+    expected_alpha, expected_beta = pm.InverseGamma._get_alpha_beta(
+        alpha=None,
+        beta=None,
+        mu=pymc_dist_params["mu"],
+        sigma=pymc_dist_params["sigma"],
+    )
+    expected_rv_op_params = {"alpha": expected_alpha, "beta": expected_beta}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestBinomial(BaseTestDistribution):
+    pymc_dist = pm.Binomial
+    pymc_dist_params = {"n": 100, "p": 0.33}
+    expected_rv_op_params = {"n": 100, "p": 0.33}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestNegativeBinomial(BaseTestDistribution):
+    pymc_dist = pm.NegativeBinomial
+    pymc_dist_params = {"n": 100, "p": 0.33}
+    expected_rv_op_params = {"n": 100, "p": 0.33}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestNegativeBinomialMuSigma(BaseTestDistribution):
+    pymc_dist = pm.NegativeBinomial
+    pymc_dist_params = {"mu": 5.0, "alpha": 8.0}
+    expected_n, expected_p = pm.NegativeBinomial.get_n_p(
+        mu=pymc_dist_params["mu"],
+        alpha=pymc_dist_params["alpha"],
+        n=None,
+        p=None,
+    )
+    expected_rv_op_params = {"n": expected_n, "p": expected_p}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestBernoulli(BaseTestDistribution):
+    pymc_dist = pm.Bernoulli
+    pymc_dist_params = {"p": 0.33}
+    expected_rv_op_params = {"p": 0.33}
+    reference_dist_params = {"p": 0.33}
+    reference_dist = seeded_scipy_distribution_builder("bernoulli")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+@pytest.mark.skip("Still not implemented")
+class TestBernoulliLogitP(BaseTestDistribution):
+    pymc_dist = pm.Bernoulli
+    pymc_dist_params = {"logit_p": 1.0}
+    expected_rv_op_params = {"mean": 0, "sigma": 10.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestPoisson(BaseTestDistribution):
+    pymc_dist = pm.Poisson
+    pymc_dist_params = {"mu": 4.0}
+    expected_rv_op_params = {"mu": 4.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestMvNormal(BaseTestDistribution):
+    pymc_dist = pm.MvNormal
+    pymc_dist_params = {
+        "mu": np.array([1.0, 2.0]),
+        "cov": np.array([[2.0, 0.0], [0.0, 3.5]]),
+    }
+    expected_rv_op_params = {
+        "mu": np.array([1.0, 2.0]),
+        "cov": np.array([[2.0, 0.0], [0.0, 3.5]]),
+    }
+    sizes_to_check = [None, (1), (2, 3)]
+    sizes_expected = [(2,), (1, 2), (2, 3, 2)]
+    reference_dist_params = {
+        "mean": np.array([1.0, 2.0]),
+        "cov": np.array([[2.0, 0.0], [0.0, 3.5]]),
+    }
+    reference_dist = seeded_numpy_distribution_builder("multivariate_normal")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestMvNormalChol(BaseTestDistribution):
+    pymc_dist = pm.MvNormal
+    pymc_dist_params = {
+        "mu": np.array([1.0, 2.0]),
+        "chol": np.array([[2.0, 0.0], [0.0, 3.5]]),
+    }
+    expected_rv_op_params = {
+        "mu": np.array([1.0, 2.0]),
+        "cov": quaddist_matrix(chol=pymc_dist_params["chol"]).eval(),
+    }
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestMvNormalTau(BaseTestDistribution):
+    pymc_dist = pm.MvNormal
+    pymc_dist_params = {
+        "mu": np.array([1.0, 2.0]),
+        "tau": np.array([[2.0, 0.0], [0.0, 3.5]]),
+    }
+    expected_rv_op_params = {
+        "mu": np.array([1.0, 2.0]),
+        "cov": quaddist_matrix(tau=pymc_dist_params["tau"]).eval(),
+    }
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestDirichlet(BaseTestDistribution):
+    pymc_dist = pm.Dirichlet
+    pymc_dist_params = {"a": np.array([1.0, 2.0])}
+    expected_rv_op_params = {"a": np.array([1.0, 2.0])}
+    sizes_to_check = [None, (1), (4,), (3, 4)]
+    sizes_expected = [(2,), (1, 2), (4, 2), (3, 4, 2)]
+    reference_dist_params = {"alpha": np.array([1.0, 2.0])}
+    reference_dist = seeded_numpy_distribution_builder("dirichlet")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestMultinomial(BaseTestDistribution):
+    pymc_dist = pm.Multinomial
+    pymc_dist_params = {"n": 85, "p": np.array([0.28, 0.62, 0.10])}
+    expected_rv_op_params = {"n": 85, "p": np.array([0.28, 0.62, 0.10])}
+    sizes_to_check = [None, (1), (4,), (3, 2)]
+    sizes_expected = [(3,), (1, 3), (4, 3), (3, 2, 3)]
+    reference_dist_params = {"n": 85, "pvals": np.array([0.28, 0.62, 0.10])}
+    reference_dist = seeded_numpy_distribution_builder("multinomial")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestCategorical(BaseTestDistribution):
+    pymc_dist = pm.Categorical
+    pymc_dist_params = {"p": np.array([0.28, 0.62, 0.10])}
+    expected_rv_op_params = {"p": np.array([0.28, 0.62, 0.10])}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+    ]
+
+
+class TestGeometric(BaseTestDistribution):
+    pymc_dist = pm.Geometric
+    pymc_dist_params = {"p": 0.9}
+    expected_rv_op_params = {"p": 0.9}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestHyperGeometric(BaseTestDistribution):
+    pymc_dist = pm.HyperGeometric
+    pymc_dist_params = {"N": 20, "k": 12, "n": 5}
+    expected_rv_op_params = {
+        "ngood": pymc_dist_params["k"],
+        "nbad": pymc_dist_params["N"] - pymc_dist_params["k"],
+        "nsample": pymc_dist_params["n"],
+    }
+    reference_dist_params = expected_rv_op_params
+    reference_dist = seeded_numpy_distribution_builder("hypergeometric")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestLogistic(BaseTestDistribution):
+    pymc_dist = pm.Logistic
+    pymc_dist_params = {"mu": 1.0, "s": 2.0}
+    expected_rv_op_params = {"mu": 1.0, "s": 2.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestLognormal(BaseTestDistribution):
+    pymc_dist = pm.Lognormal
+    pymc_dist_params = {"mu": 1.0, "sigma": 5.0}
+    expected_rv_op_params = {"mu": 1.0, "sigma": 5.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestLognormalTau(BaseTestDistribution):
+    pymc_dist = pm.Lognormal
+    tau, sigma = get_tau_sigma(tau=25.0)
+    pymc_dist_params = {"mu": 1.0, "tau": 25.0}
+    expected_rv_op_params = {"mu": 1.0, "sigma": sigma}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestLognormalSd(BaseTestDistribution):
+    pymc_dist = pm.Lognormal
+    pymc_dist_params = {"mu": 1.0, "sd": 5.0}
+    expected_rv_op_params = {"mu": 1.0, "sigma": 5.0}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestTriangular(BaseTestDistribution):
+    pymc_dist = pm.Triangular
+    pymc_dist_params = {"lower": 0, "upper": 1, "c": 0.5}
+    expected_rv_op_params = {"lower": 0, "c": 0.5, "upper": 1}
+    reference_dist_params = {"left": 0, "mode": 0.5, "right": 1}
+    reference_dist = seeded_numpy_distribution_builder("triangular")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+    ]
+
+
+class TestVonMises(BaseTestDistribution):
+    pymc_dist = pm.VonMises
+    pymc_dist_params = {"mu": -2.1, "kappa": 5}
+    expected_rv_op_params = {"mu": -2.1, "kappa": 5}
+    tests_to_run = ["check_pymc_params_match_rv_op"]
+
+
+class TestWeibull(BaseTestDistribution):
+    def weibull_rng_fn(self, size, alpha, beta, std_weibull_rng_fct):
+        return beta * std_weibull_rng_fct(alpha, size=size)
+
+    def seeded_weibul_rng_fn(self):
+        std_weibull_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "weibull"), self.get_random_state()
+        )
+        return functools.partial(self.weibull_rng_fn, std_weibull_rng_fct=std_weibull_rng_fct)
+
+    pymc_dist = pm.Weibull
+    pymc_dist_params = {"alpha": 1.0, "beta": 2.0}
+    expected_rv_op_params = {"alpha": 1.0, "beta": 2.0}
+    reference_dist_params = {"alpha": 1.0, "beta": 2.0}
+    reference_dist = seeded_weibul_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+@pytest.mark.skipif(
+    condition=(SCIPY_VERSION < parse("1.4.0")),
+    reason="betabinom is new in Scipy 1.4.0",
+)
+class TestBetaBinomial(BaseTestDistribution):
+    pymc_dist = pm.BetaBinomial
+    pymc_dist_params = {"alpha": 2.0, "beta": 1.0, "n": 5}
+    expected_rv_op_params = {"n": 5, "alpha": 2.0, "beta": 1.0}
+    reference_dist_params = {"n": 5, "a": 2.0, "b": 1.0}
+    reference_dist = seeded_scipy_distribution_builder("betabinom")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestDiscreteUniform(BaseTestDistribution):
+    def discrete_uniform_rng_fn(self, size, lower, upper, rng):
+        return st.randint.rvs(lower, upper + 1, size=size, random_state=rng)
+
+    pymc_dist = pm.DiscreteUniform
+    pymc_dist_params = {"lower": -1, "upper": 9}
+    expected_rv_op_params = {"lower": -1, "upper": 9}
+    reference_dist_params = {"lower": -1, "upper": 9}
+    reference_dist = lambda self: functools.partial(
+        self.discrete_uniform_rng_fn, rng=self.get_random_state()
+    )
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestConstant(BaseTestDistribution):
+    def constant_rng_fn(self, size, c):
+        if size is None:
+            return c
+        return np.full(size, c)
+
+    pymc_dist = pm.Constant
+    pymc_dist_params = {"c": 3}
+    expected_rv_op_params = {"c": 3}
+    reference_dist_params = {"c": 3}
+    reference_dist = lambda self: self.constant_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestZeroInflatedPoisson(BaseTestDistribution):
+    def zero_inflated_poisson_rng_fn(self, size, psi, theta, poisson_rng_fct, random_rng_fct):
+        return poisson_rng_fct(theta, size=size) * (random_rng_fct(size=size) < psi)
+
+    def seeded_zero_inflated_poisson_rng_fn(self):
+        poisson_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "poisson"), self.get_random_state()
+        )
+
+        random_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "random"), self.get_random_state()
+        )
+
+        return functools.partial(
+            self.zero_inflated_poisson_rng_fn,
+            poisson_rng_fct=poisson_rng_fct,
+            random_rng_fct=random_rng_fct,
+        )
+
+    pymc_dist = pm.ZeroInflatedPoisson
+    pymc_dist_params = {"psi": 0.9, "theta": 4.0}
+    expected_rv_op_params = {"psi": 0.9, "theta": 4.0}
+    reference_dist_params = {"psi": 0.9, "theta": 4.0}
+    reference_dist = seeded_zero_inflated_poisson_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestZeroInflatedBinomial(BaseTestDistribution):
+    def zero_inflated_binomial_rng_fn(self, size, psi, n, p, binomial_rng_fct, random_rng_fct):
+        return binomial_rng_fct(n, p, size=size) * (random_rng_fct(size=size) < psi)
+
+    def seeded_zero_inflated_binomial_rng_fn(self):
+        binomial_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "binomial"), self.get_random_state()
+        )
+
+        random_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "random"), self.get_random_state()
+        )
+
+        return functools.partial(
+            self.zero_inflated_binomial_rng_fn,
+            binomial_rng_fct=binomial_rng_fct,
+            random_rng_fct=random_rng_fct,
+        )
+
+    pymc_dist = pm.ZeroInflatedBinomial
+    pymc_dist_params = {"psi": 0.9, "n": 12, "p": 0.7}
+    expected_rv_op_params = {"psi": 0.9, "n": 12, "p": 0.7}
+    reference_dist_params = {"psi": 0.9, "n": 12, "p": 0.7}
+    reference_dist = seeded_zero_inflated_binomial_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestZeroInflatedNegativeBinomial(BaseTestDistribution):
+    def zero_inflated_negbinomial_rng_fn(
+        self, size, psi, n, p, negbinomial_rng_fct, random_rng_fct
+    ):
+        return negbinomial_rng_fct(n, p, size=size) * (random_rng_fct(size=size) < psi)
+
+    def seeded_zero_inflated_negbinomial_rng_fn(self):
+        negbinomial_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "negative_binomial"), self.get_random_state()
+        )
+
+        random_rng_fct = functools.partial(
+            getattr(np.random.RandomState, "random"), self.get_random_state()
+        )
+
+        return functools.partial(
+            self.zero_inflated_negbinomial_rng_fn,
+            negbinomial_rng_fct=negbinomial_rng_fct,
+            random_rng_fct=random_rng_fct,
+        )
+
+    n, p = pm.NegativeBinomial.get_n_p(mu=3, alpha=5)
+
+    pymc_dist = pm.ZeroInflatedNegativeBinomial
+    pymc_dist_params = {"psi": 0.9, "mu": 3, "alpha": 5}
+    expected_rv_op_params = {"psi": 0.9, "n": n, "p": p}
+    reference_dist_params = {"psi": 0.9, "n": n, "p": p}
+    reference_dist = seeded_zero_inflated_negbinomial_rng_fn
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestOrderedLogistic(BaseTestDistribution):
+    pymc_dist = pm.OrderedLogistic
+    pymc_dist_params = {"eta": 0, "cutpoints": np.array([-2, 0, 2])}
+    expected_rv_op_params = {"p": np.array([0.11920292, 0.38079708, 0.38079708, 0.11920292])}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+    ]
+
+
+class TestOrderedProbit(BaseTestDistribution):
+    pymc_dist = pm.OrderedProbit
+    pymc_dist_params = {"eta": 0, "cutpoints": np.array([-2, 0, 2])}
+    expected_rv_op_params = {"p": np.array([0.02275013, 0.47724987, 0.47724987, 0.02275013])}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+    ]
 
 
 class TestScalarParameterSamples(SeededTest):
@@ -540,20 +1199,6 @@ class TestScalarParameterSamples(SeededTest):
             return -st.halfnorm.rvs(size=size, loc=0, scale=tau ** -0.5)
 
         pymc3_random(BoundedNormal, {"tau": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_uniform(self):
-        def ref_rand(size, lower, upper):
-            return st.uniform.rvs(size=size, loc=lower, scale=upper - lower)
-
-        pymc3_random(pm.Uniform, {"lower": -Rplus, "upper": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_normal(self):
-        def ref_rand(size, mu, sigma):
-            return st.norm.rvs(size=size, loc=mu, scale=sigma)
-
-        pymc3_random(pm.Normal, {"mu": R, "sigma": Rplus}, ref_rand=ref_rand)
 
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_truncated_normal(self):
@@ -586,19 +1231,11 @@ class TestScalarParameterSamples(SeededTest):
             pm.TruncatedNormal, {"mu": R, "sigma": Rplusbig, "upper": Rplusbig}, ref_rand=ref_rand
         )
 
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_skew_normal(self):
         def ref_rand(size, alpha, mu, sigma):
             return st.skewnorm.rvs(size=size, a=alpha, loc=mu, scale=sigma)
 
         pymc3_random(pm.SkewNormal, {"mu": R, "sigma": Rplus, "alpha": R}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_half_normal(self):
-        def ref_rand(size, tau):
-            return st.halfnorm.rvs(size=size, loc=0, scale=tau ** -0.5)
-
-        pymc3_random(pm.HalfNormal, {"tau": Rplus}, ref_rand=ref_rand)
 
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_wald(self):
@@ -613,20 +1250,6 @@ class TestScalarParameterSamples(SeededTest):
             ref_rand=ref_rand,
         )
 
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_beta(self):
-        def ref_rand(size, alpha, beta):
-            return clipped_beta_rvs(a=alpha, b=beta, size=size)
-
-        pymc3_random(pm.Beta, {"alpha": Rplus, "beta": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_laplace(self):
-        def ref_rand(size, mu, b):
-            return st.laplace.rvs(mu, b, size=size)
-
-        pymc3_random(pm.Laplace, {"mu": R, "b": Rplus}, ref_rand=ref_rand)
-
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_laplace_asymmetric(self):
         def ref_rand(size, kappa, b, mu):
@@ -640,218 +1263,11 @@ class TestScalarParameterSamples(SeededTest):
         pymc3_random(pm.AsymmetricLaplace, {"b": Rplus, "kappa": Rplus, "mu": R}, ref_rand=ref_rand)
 
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_lognormal(self):
-        def ref_rand(size, mu, tau):
-            return np.exp(mu + (tau ** -0.5) * st.norm.rvs(loc=0.0, scale=1.0, size=size))
-
-        pymc3_random(pm.Lognormal, {"mu": R, "tau": Rplusbig}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_student_t(self):
-        def ref_rand(size, nu, mu, lam):
-            return st.t.rvs(nu, mu, lam ** -0.5, size=size)
-
-        pymc3_random(pm.StudentT, {"nu": Rplus, "mu": R, "lam": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_cauchy(self):
-        def ref_rand(size, alpha, beta):
-            return st.cauchy.rvs(alpha, beta, size=size)
-
-        pymc3_random(pm.Cauchy, {"alpha": R, "beta": Rplusbig}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_half_cauchy(self):
-        def ref_rand(size, beta):
-            return st.halfcauchy.rvs(scale=beta, size=size)
-
-        pymc3_random(pm.HalfCauchy, {"beta": Rplusbig}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_inverse_gamma(self):
-        def ref_rand(size, alpha, beta):
-            return st.invgamma.rvs(a=alpha, scale=beta, size=size)
-
-        pymc3_random(pm.InverseGamma, {"alpha": Rplus, "beta": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_ex_gaussian(self):
         def ref_rand(size, mu, sigma, nu):
             return nr.normal(mu, sigma, size=size) + nr.exponential(scale=nu, size=size)
 
         pymc3_random(pm.ExGaussian, {"mu": R, "sigma": Rplus, "nu": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_vonmises(self):
-        def ref_rand(size, mu, kappa):
-            return st.vonmises.rvs(size=size, loc=mu, kappa=kappa)
-
-        pymc3_random(pm.VonMises, {"mu": R, "kappa": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_triangular(self):
-        def ref_rand(size, lower, upper, c):
-            scale = upper - lower
-            c_ = (c - lower) / scale
-            return st.triang.rvs(size=size, loc=lower, scale=scale, c=c_)
-
-        pymc3_random(
-            pm.Triangular, {"lower": Runif, "upper": Runif + 3, "c": Runif + 1}, ref_rand=ref_rand
-        )
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_flat(self):
-        with pm.Model():
-            f = pm.Flat("f")
-            with pytest.raises(ValueError):
-                f.random(1)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_half_flat(self):
-        with pm.Model():
-            f = pm.HalfFlat("f")
-            with pytest.raises(ValueError):
-                f.random(1)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_binomial(self):
-        pymc3_random_discrete(pm.Binomial, {"n": Nat, "p": Unit}, ref_rand=st.binom.rvs)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    @pytest.mark.xfail(
-        sys.platform.startswith("win"),
-        reason="Known issue: https://github.com/pymc-devs/pymc3/pull/4269",
-    )
-    def test_beta_binomial(self):
-        pymc3_random_discrete(
-            pm.BetaBinomial, {"n": Nat, "alpha": Rplus, "beta": Rplus}, ref_rand=self._beta_bin
-        )
-
-    def _beta_bin(self, n, alpha, beta, size=None):
-        return st.binom.rvs(n, st.beta.rvs(a=alpha, b=beta, size=size))
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_bernoulli(self):
-        pymc3_random_discrete(
-            pm.Bernoulli, {"p": Unit}, ref_rand=lambda size, p=None: st.bernoulli.rvs(p, size=size)
-        )
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_poisson(self):
-        pymc3_random_discrete(pm.Poisson, {"mu": Rplusbig}, size=500, ref_rand=st.poisson.rvs)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_negative_binomial(self):
-        def ref_rand(size, alpha, mu):
-            return st.nbinom.rvs(alpha, alpha / (mu + alpha), size=size)
-
-        pymc3_random_discrete(
-            pm.NegativeBinomial,
-            {"mu": Rplusbig, "alpha": Rplusbig},
-            size=100,
-            fails=50,
-            ref_rand=ref_rand,
-        )
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_geometric(self):
-        pymc3_random_discrete(pm.Geometric, {"p": Unit}, size=500, fails=50, ref_rand=nr.geometric)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_hypergeometric(self):
-        def ref_rand(size, N, k, n):
-            return st.hypergeom.rvs(M=N, n=k, N=n, size=size)
-
-        pymc3_random_discrete(
-            pm.HyperGeometric,
-            {
-                "N": Domain([10, 11, 12, 13], "int64"),
-                "k": Domain([4, 5, 6, 7], "int64"),
-                "n": Domain([6, 7, 8, 9], "int64"),
-            },
-            size=500,
-            fails=50,
-            ref_rand=ref_rand,
-        )
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_discrete_uniform(self):
-        def ref_rand(size, lower, upper):
-            return st.randint.rvs(lower, upper + 1, size=size)
-
-        pymc3_random_discrete(
-            pm.DiscreteUniform, {"lower": -NatSmall, "upper": NatSmall}, ref_rand=ref_rand
-        )
-
-    def test_discrete_weibull(self):
-        def ref_rand(size, q, beta):
-            u = np.random.uniform(size=size)
-
-            return np.ceil(np.power(np.log(1 - u) / np.log(q), 1.0 / beta)) - 1
-
-        pymc3_random_discrete(
-            pm.DiscreteWeibull, {"q": Unit, "beta": Rplusdunif}, ref_rand=ref_rand
-        )
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    @pytest.mark.parametrize("s", [2, 3, 4])
-    def test_categorical_random(self, s):
-        def ref_rand(size, p):
-            return nr.choice(np.arange(p.shape[0]), p=p, size=size)
-
-        pymc3_random_discrete(pm.Categorical, {"p": Simplex(s)}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_constant_dist(self):
-        def ref_rand(size, c):
-            return c * np.ones(size, dtype=int)
-
-        pymc3_random_discrete(pm.Constant, {"c": I}, ref_rand=ref_rand)
-
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_mv_normal(self):
-        def ref_rand(size, mu, cov):
-            return st.multivariate_normal.rvs(mean=mu, cov=cov, size=size)
-
-        def ref_rand_tau(size, mu, tau):
-            return ref_rand(size, mu, linalg.inv(tau))
-
-        def ref_rand_chol(size, mu, chol):
-            return ref_rand(size, mu, np.dot(chol, chol.T))
-
-        def ref_rand_uchol(size, mu, chol):
-            return ref_rand(size, mu, np.dot(chol.T, chol))
-
-        for n in [2, 3]:
-            pymc3_random(
-                pm.MvNormal,
-                {"mu": Vector(R, n), "cov": PdMatrix(n)},
-                size=100,
-                valuedomain=Vector(R, n),
-                ref_rand=ref_rand,
-            )
-            pymc3_random(
-                pm.MvNormal,
-                {"mu": Vector(R, n), "tau": PdMatrix(n)},
-                size=100,
-                valuedomain=Vector(R, n),
-                ref_rand=ref_rand_tau,
-            )
-            pymc3_random(
-                pm.MvNormal,
-                {"mu": Vector(R, n), "chol": PdMatrixChol(n)},
-                size=100,
-                valuedomain=Vector(R, n),
-                ref_rand=ref_rand_chol,
-            )
-            pymc3_random(
-                pm.MvNormal,
-                {"mu": Vector(R, n), "chol": PdMatrixCholUpper(n)},
-                size=100,
-                valuedomain=Vector(R, n),
-                ref_rand=ref_rand_uchol,
-                extra_args={"lower": False},
-            )
 
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_matrix_normal(self):
@@ -995,20 +1411,6 @@ class TestScalarParameterSamples(SeededTest):
                 ref_rand=ref_rand,
             )
 
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_dirichlet(self):
-        def ref_rand(size, a):
-            return st.dirichlet.rvs(a, size=size)
-
-        for n in [2, 3]:
-            pymc3_random(
-                pm.Dirichlet,
-                {"a": Vector(Rplus, n)},
-                valuedomain=Simplex(n),
-                size=100,
-                ref_rand=ref_rand,
-            )
-
     @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_dirichlet_multinomial(self):
         def ref_rand(size, a, n):
@@ -1076,42 +1478,12 @@ class TestScalarParameterSamples(SeededTest):
         with expectation:
             m.random()
 
-    @pytest.mark.skip(reason="This test is covered by Aesara")
-    def test_multinomial(self):
-        def ref_rand(size, p, n):
-            return nr.multinomial(pvals=p, n=n, size=size)
-
-        for n in [2, 3]:
-            pymc3_random_discrete(
-                pm.Multinomial,
-                {"p": Simplex(n), "n": Nat},
-                valuedomain=Vector(Nat, n),
-                size=100,
-                ref_rand=ref_rand,
-            )
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_gumbel(self):
-        def ref_rand(size, mu, beta):
-            return st.gumbel_r.rvs(loc=mu, scale=beta, size=size)
-
-        pymc3_random(pm.Gumbel, {"mu": R, "beta": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
-    def test_logistic(self):
-        def ref_rand(size, mu, s):
-            return st.logistic.rvs(loc=mu, scale=s, size=size)
-
-        pymc3_random(pm.Logistic, {"mu": R, "s": Rplus}, ref_rand=ref_rand)
-
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_logitnormal(self):
         def ref_rand(size, mu, sigma):
             return expit(st.norm.rvs(loc=mu, scale=sigma, size=size))
 
         pymc3_random(pm.LogitNormal, {"mu": R, "sigma": Rplus}, ref_rand=ref_rand)
 
-    @pytest.mark.xfail(reason="This distribution has not been refactored for v4")
     def test_moyal(self):
         def ref_rand(size, mu, sigma):
             return st.moyal.rvs(loc=mu, scale=sigma, size=size)
@@ -1766,7 +2138,6 @@ class TestMvNormal(SeededTest):
         Sigma = np.eye(2)
 
         with pm.Model() as model:
-
             X = pm.MvNormal("X", mu=np.zeros(2), cov=Sigma, shape=(N, 2))
             betas = pm.Normal("betas", 0, 1, shape=2)
             y = pm.Deterministic("y", pm.math.dot(X, betas))
@@ -1849,36 +2220,3 @@ class TestMvGaussianRandomWalk(SeededTest):
             prior = pm.sample_prior_predictive(samples=sample_shape)
 
         assert prior["mv"].shape == to_tuple(sample_shape) + dist_shape
-
-
-def test_exponential_parameterization():
-    test_lambda = floatX(10.0)
-
-    exp_pymc = pm.Exponential.dist(lam=test_lambda)
-    (rv_scale,) = exp_pymc.owner.inputs[3:]
-
-    npt.assert_almost_equal(rv_scale.eval(), 1 / test_lambda)
-
-
-def test_gamma_parameterization():
-
-    test_alpha = floatX(10.0)
-    test_beta = floatX(100.0)
-
-    gamma_pymc = pm.Gamma.dist(alpha=test_alpha, beta=test_beta)
-    rv_alpha, rv_inv_beta = gamma_pymc.owner.inputs[3:]
-
-    assert np.array_equal(rv_alpha.eval(), test_alpha)
-
-    decimal = select_by_precision(float64=6, float32=3)
-
-    npt.assert_almost_equal(rv_inv_beta.eval(), 1.0 / test_beta, decimal)
-
-    test_mu = test_alpha / test_beta
-    test_sigma = np.sqrt(test_mu / test_beta)
-
-    gamma_pymc = pm.Gamma.dist(mu=test_mu, sigma=test_sigma)
-    rv_alpha, rv_inv_beta = gamma_pymc.owner.inputs[3:]
-
-    npt.assert_almost_equal(rv_alpha.eval(), test_alpha, decimal)
-    npt.assert_almost_equal(rv_inv_beta.eval(), 1.0 / test_beta, decimal)

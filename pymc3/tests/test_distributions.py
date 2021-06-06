@@ -101,6 +101,7 @@ from pymc3.distributions import (
     continuous,
     logcdf,
     logpt,
+    logpt_sum,
 )
 from pymc3.math import kronecker, logsumexp
 from pymc3.model import Deterministic, Model, Point
@@ -593,6 +594,7 @@ class TestMatchesScipy:
         n_samples=100,
         extra_args=None,
         scipy_args=None,
+        skip_params_fn=lambda x: False,
     ):
         """
         Generic test for PyMC3 logp methods
@@ -624,6 +626,9 @@ class TestMatchesScipy:
             the pymc3 distribution logp is calculated
         scipy_args : Dictionary with extra arguments needed to call scipy logp method
             Usually the same as extra_args
+        skip_params_fn: Callable
+            A function that takes a ``dict`` of the test points and returns a
+            boolean indicating whether or not to perform the test.
         """
         if decimal is None:
             decimal = select_by_precision(float64=6, float32=3)
@@ -645,6 +650,8 @@ class TestMatchesScipy:
         domains["value"] = domain
         for pt in product(domains, n_samples=n_samples):
             pt = dict(pt)
+            if skip_params_fn(pt):
+                continue
             pt_d = self._model_input_dict(model, param_vars, pt)
             pt_logp = Point(pt_d, model=model)
             pt_ref = Point(pt, filter_model_vars=False, model=model)
@@ -689,6 +696,7 @@ class TestMatchesScipy:
         n_samples=100,
         skip_paramdomain_inside_edge_test=False,
         skip_paramdomain_outside_edge_test=False,
+        skip_params_fn=lambda x: False,
     ):
         """
         Generic test for PyMC3 logcdf methods
@@ -729,6 +737,9 @@ class TestMatchesScipy:
         skip_paramdomain_outside_edge_test : Bool
             Whether to run test 2., which checks that pymc3 distribution logcdf
             returns -inf for invalid parameter values outside the supported domain edge
+        skip_params_fn: Callable
+            A function that takes a ``dict`` of the test points and returns a
+            boolean indicating whether or not to perform the test.
 
         Returns
         -------
@@ -744,6 +755,8 @@ class TestMatchesScipy:
 
             for pt in product(domains, n_samples=n_samples):
                 params = dict(pt)
+                if skip_params_fn(params):
+                    continue
                 scipy_cdf = scipy_logcdf(**params)
                 value = params.pop("value")
                 with Model() as m:
@@ -814,11 +827,23 @@ class TestMatchesScipy:
                 )
 
         # Test that method works with multiple values or raises informative TypeError
-        with pytest.raises(TypeError), aesara.config.change_flags(mode=Mode("py")):
-            logcdf(valid_dist, np.array([valid_value, valid_value])).eval()
+        valid_dist = change_rv_size(valid_dist, 2)
+        with aesara.config.change_flags(mode=Mode("py")):
+            try:
+                logcdf(valid_dist, np.array([valid_value, valid_value])).eval()
+            except TypeError as err:
+                assert str(err).endswith(
+                    "logcdf expects a scalar value but received a 1-dimensional object."
+                )
 
     def check_selfconsistency_discrete_logcdf(
-        self, distribution, domain, paramdomains, decimal=None, n_samples=100
+        self,
+        distribution,
+        domain,
+        paramdomains,
+        decimal=None,
+        n_samples=100,
+        skip_params_fn=lambda x: False,
     ):
         """
         Check that logcdf of discrete distributions matches sum of logps up to value
@@ -829,6 +854,8 @@ class TestMatchesScipy:
             decimal = select_by_precision(float64=6, float32=3)
         for pt in product(domains, n_samples=n_samples):
             params = dict(pt)
+            if skip_params_fn(params):
+                continue
             value = params.pop("value")
             values = np.arange(domain.lower, value + 1)
             dist = distribution.dist(**params)
@@ -883,7 +910,6 @@ class TestMatchesScipy:
             assert logpt(invalid_dist, np.array(0.5)).eval() == -np.inf
             assert logcdf(invalid_dist, np.array(2.0)).eval() == -np.inf
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_triangular(self):
         self.check_logp(
             Triangular,
@@ -898,12 +924,20 @@ class TestMatchesScipy:
             lambda value, c, lower, upper: sp.triang.logcdf(value, c - lower, lower, upper - lower),
             skip_paramdomain_outside_edge_test=True,
         )
-        # Custom logp check for invalid value
-        valid_dist = Triangular.dist(lower=0, upper=1, c=2.0)
-        assert np.all(logpt(valid_dist, np.array([1.9, 2.0, 2.1])).tag.test_value == -np.inf)
+
+        # Custom logp/logcdf check for values outside of domain
+        valid_dist = Triangular.dist(lower=0, upper=1, c=0.9, size=2)
+        with aesara.config.change_flags(mode=Mode("py")):
+            assert np.all(logpt(valid_dist, np.array([-1, 2])).eval() == -np.inf)
+            assert np.all(logcdf(valid_dist, np.array([-1, 2])).eval() == [-np.inf, 0])
 
         # Custom logp / logcdf check for invalid parameters
-        invalid_dist = Triangular.dist(lower=1, upper=0, c=2.0)
+        invalid_dist = Triangular.dist(lower=1, upper=0, c=0.1)
+        with aesara.config.change_flags(mode=Mode("py")):
+            assert logpt(invalid_dist, 0.5).eval() == -np.inf
+            assert logcdf(invalid_dist, 2).eval() == -np.inf
+
+        invalid_dist = Triangular.dist(lower=0, upper=1, c=2.0)
         with aesara.config.change_flags(mode=Mode("py")):
             assert logpt(invalid_dist, 0.5).eval() == -np.inf
             assert logcdf(invalid_dist, 2).eval() == -np.inf
@@ -922,7 +956,6 @@ class TestMatchesScipy:
             x = PositiveNormal("x", mu=0, sigma=1, transform=None)
         assert np.isinf(logpt(x, -1).eval())
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_discrete_unif(self):
         self.check_logp(
             DiscreteUniform,
@@ -948,7 +981,6 @@ class TestMatchesScipy:
             assert logpt(invalid_dist, 0.5).eval() == -np.inf
             assert logcdf(invalid_dist, 2).eval() == -np.inf
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_flat(self):
         self.check_logp(Flat, Runif, {}, lambda value: 0)
         with Model():
@@ -956,10 +988,9 @@ class TestMatchesScipy:
             assert_allclose(x.tag.test_value, 0)
         self.check_logcdf(Flat, R, {}, lambda value: np.log(0.5))
         # Check infinite cases individually.
-        assert 0.0 == logcdf(Flat.dist(), np.inf).tag.test_value
-        assert -np.inf == logcdf(Flat.dist(), -np.inf).tag.test_value
+        assert 0.0 == logcdf(Flat.dist(), np.inf).eval()
+        assert -np.inf == logcdf(Flat.dist(), -np.inf).eval()
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_half_flat(self):
         self.check_logp(HalfFlat, Rplus, {}, lambda value: 0)
         with Model():
@@ -968,8 +999,8 @@ class TestMatchesScipy:
             assert x.tag.test_value.shape == (2,)
         self.check_logcdf(HalfFlat, Rplus, {}, lambda value: -np.inf)
         # Check infinite cases individually.
-        assert 0.0 == logcdf(HalfFlat.dist(), np.inf).tag.test_value
-        assert -np.inf == logcdf(HalfFlat.dist(), -np.inf).tag.test_value
+        assert 0.0 == logcdf(HalfFlat.dist(), np.inf).eval()
+        assert -np.inf == logcdf(HalfFlat.dist(), -np.inf).eval()
 
     def test_normal(self):
         self.check_logp(
@@ -1097,15 +1128,28 @@ class TestMatchesScipy:
             decimal=select_by_precision(float64=5, float32=3),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_kumaraswamy(self):
-        # Scipy does not have a built-in Kumaraswamy pdf
+        # Scipy does not have a built-in Kumaraswamy
         def scipy_log_pdf(value, a, b):
             return (
                 np.log(a) + np.log(b) + (a - 1) * np.log(value) + (b - 1) * np.log(1 - value ** a)
             )
 
-        self.check_logp(Kumaraswamy, Unit, {"a": Rplus, "b": Rplus}, scipy_log_pdf)
+        def scipy_log_cdf(value, a, b):
+            return pm.math.log1mexp_numpy(-(b * np.log1p(-(value ** a))))
+
+        self.check_logp(
+            Kumaraswamy,
+            Unit,
+            {"a": Rplus, "b": Rplus},
+            scipy_log_pdf,
+        )
+        self.check_logcdf(
+            Kumaraswamy,
+            Unit,
+            {"a": Rplus, "b": Rplus},
+            scipy_log_cdf,
+        )
 
     def test_exponential(self):
         self.check_logp(
@@ -1121,7 +1165,6 @@ class TestMatchesScipy:
             lambda value, lam: sp.expon.logcdf(value, 0, 1 / lam),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_geometric(self):
         self.check_logp(
             Geometric,
@@ -1141,7 +1184,6 @@ class TestMatchesScipy:
             {"p": Unit},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_hypergeometric(self):
         def modified_scipy_hypergeom_logpmf(value, N, k, n):
             # Convert nan to -np.inf
@@ -1165,17 +1207,20 @@ class TestMatchesScipy:
             Nat,
             {"N": NatSmall, "k": NatSmall, "n": NatSmall},
             modified_scipy_hypergeom_logpmf,
+            skip_params_fn=lambda x: x["N"] < x["n"] or x["N"] < x["k"],
         )
         self.check_logcdf(
             HyperGeometric,
             Nat,
             {"N": NatSmall, "k": NatSmall, "n": NatSmall},
             modified_scipy_hypergeom_logcdf,
+            skip_params_fn=lambda x: x["N"] < x["n"] or x["N"] < x["k"],
         )
         self.check_selfconsistency_discrete_logcdf(
             HyperGeometric,
             Nat,
             {"N": NatSmall, "k": NatSmall, "n": NatSmall},
+            skip_params_fn=lambda x: x["N"] < x["n"] or x["N"] < x["k"],
         )
 
     def test_negative_binomial(self):
@@ -1239,7 +1284,6 @@ class TestMatchesScipy:
             with pytest.raises(ValueError, match=f"Incompatible parametrization. {expected}"):
                 NegativeBinomial("x", mu=mu, p=p, alpha=alpha, n=n)
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_laplace(self):
         self.check_logp(
             Laplace,
@@ -1263,7 +1307,6 @@ class TestMatchesScipy:
             laplace_asymmetric_logpdf,
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_lognormal(self):
         self.check_logp(
             Lognormal,
@@ -1271,14 +1314,27 @@ class TestMatchesScipy:
             {"mu": R, "tau": Rplusbig},
             lambda value, mu, tau: floatX(sp.lognorm.logpdf(value, tau ** -0.5, 0, np.exp(mu))),
         )
+        self.check_logp(
+            Lognormal,
+            Rplus,
+            {"mu": R, "sigma": Rplusbig},
+            lambda value, mu, sigma: floatX(sp.lognorm.logpdf(value, sigma, 0, np.exp(mu))),
+            n_samples=5,  # Just testing alternative parametrization
+        )
         self.check_logcdf(
             Lognormal,
             Rplus,
             {"mu": R, "tau": Rplusbig},
             lambda value, mu, tau: sp.lognorm.logcdf(value, tau ** -0.5, 0, np.exp(mu)),
         )
+        self.check_logcdf(
+            Lognormal,
+            Rplus,
+            {"mu": R, "sigma": Rplusbig},
+            lambda value, mu, sigma: sp.lognorm.logcdf(value, sigma, 0, np.exp(mu)),
+            n_samples=5,  # Just testing alternative parametrization
+        )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_t(self):
         self.check_logp(
             StudentT,
@@ -1286,12 +1342,26 @@ class TestMatchesScipy:
             {"nu": Rplus, "mu": R, "lam": Rplus},
             lambda value, nu, mu, lam: sp.t.logpdf(value, nu, mu, lam ** -0.5),
         )
+        self.check_logp(
+            StudentT,
+            R,
+            {"nu": Rplus, "mu": R, "sigma": Rplus},
+            lambda value, nu, mu, sigma: sp.t.logpdf(value, nu, mu, sigma),
+            n_samples=5,  # Just testing alternative parametrization
+        )
         self.check_logcdf(
             StudentT,
             R,
             {"nu": Rplus, "mu": R, "lam": Rplus},
             lambda value, nu, mu, lam: sp.t.logcdf(value, nu, mu, lam ** -0.5),
-            n_samples=10,
+            n_samples=10,  # relies on slow incomplete beta
+        )
+        self.check_logcdf(
+            StudentT,
+            R,
+            {"nu": Rplus, "mu": R, "sigma": Rplus},
+            lambda value, nu, mu, sigma: sp.t.logcdf(value, nu, mu, sigma),
+            n_samples=5,  # Just testing alternative parametrization
         )
 
     def test_cauchy(self):
@@ -1413,7 +1483,10 @@ class TestMatchesScipy:
             lambda value, alpha, m: sp.pareto.logcdf(value, alpha, scale=m),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    @pytest.mark.xfail(
+        condition=(aesara.config.floatX == "float32"),
+        reason="Fails on float32 due to numerical issues",
+    )
     def test_weibull_logp(self):
         self.check_logp(
             Weibull,
@@ -1422,7 +1495,6 @@ class TestMatchesScipy:
             lambda value, alpha, beta: sp.exponweib.logpdf(value, 1, alpha, scale=beta),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     @pytest.mark.xfail(
         condition=(aesara.config.floatX == "float32"),
         reason="Fails on float32 due to inf issues",
@@ -1445,7 +1517,6 @@ class TestMatchesScipy:
             lambda value, sigma: sp.halfcauchy.logpdf(value, 0, sigma),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_skew_normal(self):
         self.check_logp(
             SkewNormal,
@@ -1476,8 +1547,7 @@ class TestMatchesScipy:
             n_samples=10,
         )
 
-    # Too lazy to propagate decimal parameter through the whole chain of deps
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    @pytest.mark.xfail(reason="checkd tests has not been refactored")
     @pytest.mark.xfail(condition=(aesara.config.floatX == "float32"), reason="Fails on float32")
     def test_beta_binomial_distribution(self):
         self.checkd(
@@ -1486,7 +1556,6 @@ class TestMatchesScipy:
             {"alpha": Rplus, "beta": Rplus, "n": NatSmall},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     @pytest.mark.skipif(
         condition=(SCIPY_VERSION < parse("1.4.0")), reason="betabinom is new in Scipy 1.4.0"
     )
@@ -1498,7 +1567,6 @@ class TestMatchesScipy:
             lambda value, alpha, beta, n: sp.betabinom.logpmf(value, a=alpha, b=beta, n=n),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     @pytest.mark.xfail(condition=(aesara.config.floatX == "float32"), reason="Fails on float32")
     @pytest.mark.skipif(
         condition=(SCIPY_VERSION < parse("1.4.0")), reason="betabinom is new in Scipy 1.4.0"
@@ -1511,7 +1579,6 @@ class TestMatchesScipy:
             lambda value, alpha, beta, n: sp.betabinom.logcdf(value, a=alpha, b=beta, n=n),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_beta_binomial_selfconsistency(self):
         self.check_selfconsistency_discrete_logcdf(
             BetaBinomial,
@@ -1599,12 +1666,10 @@ class TestMatchesScipy:
             x = NonZeroPoisson("x", mu=4)
         assert np.isinf(logpt(x, 0).eval())
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_constantdist(self):
         self.check_logp(Constant, I, {"c": I}, lambda value, c: np.log(c == value))
 
-    # Too lazy to propagate decimal parameter through the whole chain of deps
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    @pytest.mark.xfail(reason="Test has not been refactored")
     @pytest.mark.xfail(
         condition=(aesara.config.floatX == "float32"),
         reason="Fails on float32 due to inf issues",
@@ -1616,16 +1681,37 @@ class TestMatchesScipy:
             {"theta": Rplus, "psi": Unit},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
-    def test_zeroinflatedpoisson_logcdf(self):
+    def test_zeroinflatedpoisson(self):
+        def logp_fn(value, psi, theta):
+            if value == 0:
+                return np.log((1 - psi) * sp.poisson.pmf(0, theta))
+            else:
+                return np.log(psi * sp.poisson.pmf(value, theta))
+
+        def logcdf_fn(value, psi, theta):
+            return np.log((1 - psi) + psi * sp.poisson.cdf(value, theta))
+
+        self.check_logp(
+            ZeroInflatedPoisson,
+            Nat,
+            {"psi": Unit, "theta": Rplus},
+            logp_fn,
+        )
+
+        self.check_logcdf(
+            ZeroInflatedPoisson,
+            Nat,
+            {"psi": Unit, "theta": Rplus},
+            logcdf_fn,
+        )
+
         self.check_selfconsistency_discrete_logcdf(
             ZeroInflatedPoisson,
             Nat,
             {"theta": Rplus, "psi": Unit},
         )
 
-    # Too lazy to propagate decimal parameter through the whole chain of deps
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    @pytest.mark.xfail(reason="Test not refactored yet")
     @pytest.mark.xfail(
         condition=(aesara.config.floatX == "float32"),
         reason="Fails on float32 due to inf issues",
@@ -1637,17 +1723,41 @@ class TestMatchesScipy:
             {"mu": Rplusbig, "alpha": Rplusbig, "psi": Unit},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
-    def test_zeroinflatednegativebinomial_logcdf(self):
-        self.check_selfconsistency_discrete_logcdf(
+    def test_zeroinflatednegativebinomial(self):
+        def logp_fn(value, psi, mu, alpha):
+            n, p = NegativeBinomial.get_n_p(mu=mu, alpha=alpha)
+            if value == 0:
+                return np.log((1 - psi) * sp.nbinom.pmf(0, n, p))
+            else:
+                return np.log(psi * sp.nbinom.pmf(value, n, p))
+
+        def logcdf_fn(value, psi, mu, alpha):
+            n, p = NegativeBinomial.get_n_p(mu=mu, alpha=alpha)
+            return np.log((1 - psi) + psi * sp.nbinom.cdf(value, n, p))
+
+        self.check_logp(
             ZeroInflatedNegativeBinomial,
             Nat,
-            {"mu": Rplusbig, "alpha": Rplusbig, "psi": Unit},
+            {"psi": Unit, "mu": Rplusbig, "alpha": Rplusbig},
+            logp_fn,
+        )
+
+        self.check_logcdf(
+            ZeroInflatedNegativeBinomial,
+            Nat,
+            {"psi": Unit, "mu": Rplusbig, "alpha": Rplusbig},
+            logcdf_fn,
             n_samples=10,
         )
 
-    # Too lazy to propagate decimal parameter through the whole chain of deps
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+        self.check_selfconsistency_discrete_logcdf(
+            ZeroInflatedNegativeBinomial,
+            Nat,
+            {"psi": Unit, "mu": Rplusbig, "alpha": Rplusbig},
+            n_samples=10,
+        )
+
+    @pytest.mark.xfail(reason="Test not refactored yet")
     def test_zeroinflatedbinomial_distribution(self):
         self.checkd(
             ZeroInflatedBinomial,
@@ -1655,8 +1765,31 @@ class TestMatchesScipy:
             {"n": NatSmall, "p": Unit, "psi": Unit},
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
-    def test_zeroinflatedbinomial_logcdf(self):
+    def test_zeroinflatedbinomial(self):
+        def logp_fn(value, psi, n, p):
+            if value == 0:
+                return np.log((1 - psi) * sp.binom.pmf(0, n, p))
+            else:
+                return np.log(psi * sp.binom.pmf(value, n, p))
+
+        def logcdf_fn(value, psi, n, p):
+            return np.log((1 - psi) + psi * sp.binom.cdf(value, n, p))
+
+        self.check_logp(
+            ZeroInflatedBinomial,
+            Nat,
+            {"psi": Unit, "n": NatSmall, "p": Unit},
+            logp_fn,
+        )
+
+        self.check_logcdf(
+            ZeroInflatedBinomial,
+            Nat,
+            {"psi": Unit, "n": NatSmall, "p": Unit},
+            logcdf_fn,
+            n_samples=10,
+        )
+
         self.check_selfconsistency_discrete_logcdf(
             ZeroInflatedBinomial,
             Nat,
@@ -2283,7 +2416,6 @@ class TestMatchesScipy:
         )
 
     @pytest.mark.parametrize("n", [2, 3, 4])
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_orderedlogistic(self, n):
         self.check_logp(
             OrderedLogistic,
@@ -2293,7 +2425,6 @@ class TestMatchesScipy:
         )
 
     @pytest.mark.parametrize("n", [2, 3, 4])
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_orderedprobit(self, n):
         self.check_logp(
             OrderedProbit,
@@ -2381,7 +2512,6 @@ class TestMatchesScipy:
         )
 
     @pytest.mark.xfail(condition=(aesara.config.floatX == "float32"), reason="Fails on float32")
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_vonmises(self):
         self.check_logp(
             VonMises,
@@ -2390,19 +2520,20 @@ class TestMatchesScipy:
             lambda value, mu, kappa: floatX(sp.vonmises.logpdf(value, kappa, loc=mu)),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_gumbel(self):
-        def gumbel(value, mu, beta):
-            return floatX(sp.gumbel_r.logpdf(value, loc=mu, scale=beta))
+        self.check_logp(
+            Gumbel,
+            R,
+            {"mu": R, "beta": Rplusbig},
+            lambda value, mu, beta: sp.gumbel_r.logpdf(value, loc=mu, scale=beta),
+        )
+        self.check_logcdf(
+            Gumbel,
+            R,
+            {"mu": R, "beta": Rplusbig},
+            lambda value, mu, beta: sp.gumbel_r.logcdf(value, loc=mu, scale=beta),
+        )
 
-        self.check_logp(Gumbel, R, {"mu": R, "beta": Rplusbig}, gumbel)
-
-        def gumbellcdf(value, mu, beta):
-            return floatX(sp.gumbel_r.logcdf(value, loc=mu, scale=beta))
-
-        self.check_logcdf(Gumbel, R, {"mu": R, "beta": Rplusbig}, gumbellcdf)
-
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_logistic(self):
         self.check_logp(
             Logistic,
@@ -2419,7 +2550,6 @@ class TestMatchesScipy:
             decimal=select_by_precision(float64=6, float32=1),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_logitnormal(self):
         self.check_logp(
             LogitNormal,
@@ -2431,19 +2561,11 @@ class TestMatchesScipy:
             decimal=select_by_precision(float64=6, float32=1),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
-    def test_multidimensional_beta_construction(self):
-        with Model():
-            Beta("beta", alpha=1.0, beta=1.0, size=(10, 20))
-
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    @pytest.mark.xfail(
+        condition=(aesara.config.floatX == "float32"),
+        reason="Some combinations underflow to -inf in float32 in pymc version",
+    )
     def test_rice(self):
-        self.check_logp(
-            Rice,
-            Rplus,
-            {"nu": Rplus, "sigma": Rplusbig},
-            lambda value, nu, sigma: sp.rice.logpdf(value, b=nu / sigma, loc=0, scale=sigma),
-        )
         self.check_logp(
             Rice,
             Rplus,
@@ -2451,7 +2573,14 @@ class TestMatchesScipy:
             lambda value, b, sigma: sp.rice.logpdf(value, b=b, loc=0, scale=sigma),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
+    def test_rice_nu(self):
+        self.check_logp(
+            Rice,
+            Rplus,
+            {"nu": Rplus, "sigma": Rplusbig},
+            lambda value, nu, sigma: sp.rice.logpdf(value, b=nu / sigma, loc=0, scale=sigma),
+        )
+
     def test_moyal_logp(self):
         # Using a custom domain, because the standard `R` domain undeflows with scipy in float64
         value_domain = Domain([-inf, -1.5, -1, -0.01, 0.0, 0.01, 1, 1.5, inf])
@@ -2462,7 +2591,6 @@ class TestMatchesScipy:
             lambda value, mu, sigma: floatX(sp.moyal.logpdf(value, mu, sigma)),
         )
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     @pytest.mark.xfail(
         condition=(aesara.config.floatX == "float32"),
         reason="Pymc3 underflows earlier than scipy on float32",
@@ -2726,27 +2854,34 @@ def test_discrete_trafo():
         err.match("Transformations for discrete distributions")
 
 
+# TODO: Is this test working as expected / still relevant?
 @pytest.mark.parametrize("shape", [tuple(), (1,), (3, 1), (3, 2)], ids=str)
-@pytest.mark.xfail(reason="Distribution not refactored yet")
 def test_orderedlogistic_dimensions(shape):
     # Test for issue #3535
     loge = np.log10(np.exp(1))
     size = 7
     p = np.ones(shape + (10,)) / 10
     cutpoints = np.tile(logit(np.linspace(0, 1, 11)[1:-1]), shape + (1,))
-    obs = np.random.randint(0, 1, size=(size,) + shape)
+    obs = np.random.randint(0, 2, size=(size,) + shape)
     with Model():
         ol = OrderedLogistic(
-            "ol", eta=np.zeros(shape), cutpoints=cutpoints, size=shape, observed=obs
+            "ol",
+            eta=np.zeros(shape),
+            cutpoints=cutpoints,
+            observed=obs,
         )
-        c = Categorical("c", p=p, size=shape, observed=obs)
-    ologp = logpt(ol, 1).eval() * loge
-    clogp = logpt(c, 1) * loge
+        c = Categorical(
+            "c",
+            p=p,
+            observed=obs,
+        )
+    ologp = logpt_sum(ol, np.ones_like(obs)).eval() * loge
+    clogp = logpt_sum(c, np.ones_like(obs)).eval() * loge
     expected = -np.prod((size,) + shape)
 
-    assert c.distribution.p.ndim == (len(shape) + 1)
+    assert c.owner.inputs[3].ndim == (len(shape) + 1)
     assert np.allclose(clogp, expected)
-    assert ol.distribution.p.ndim == (len(shape) + 1)
+    assert ol.owner.inputs[3].ndim == (len(shape) + 1)
     assert np.allclose(ologp, expected)
 
 
@@ -2803,17 +2938,20 @@ class TestBugfixes:
         assert isinstance(actual_a, np.ndarray)
         assert actual_a.shape == (X.shape[0],)
 
-    @pytest.mark.xfail(reason="Distribution not refactored yet")
     def test_issue_4499(self):
         # Test for bug in Uniform and DiscreteUniform logp when setting check_bounds = False
         # https://github.com/pymc-devs/pymc3/issues/4499
         with pm.Model(check_bounds=False) as m:
-            x = pm.Uniform("x", 0, 2, shape=10, transform=None)
-        assert_almost_equal(m.logp_array(np.ones(10)), -np.log(2) * 10)
+            x = pm.Uniform("x", 0, 2, size=10, transform=None)
+        assert_almost_equal(m.logp({"x": np.ones(10)}), -np.log(2) * 10)
 
         with pm.Model(check_bounds=False) as m:
-            x = pm.DiscreteUniform("x", 0, 1, shape=10)
-        assert_almost_equal(m.logp_array(np.ones(10)), -np.log(2) * 10)
+            x = pm.DiscreteUniform("x", 0, 1, size=10)
+        assert_almost_equal(m.logp({"x": np.ones(10)}), -np.log(2) * 10)
+
+        with pm.Model(check_bounds=False) as m:
+            x = pm.Constant("x", 1, size=10)
+        assert_almost_equal(m.logp({"x": np.ones(10)}), 0 * 10)
 
 
 @pytest.mark.xfail(reason="DensityDist no longer supported")
@@ -2829,3 +2967,25 @@ def test_serialize_density_dist():
     import pickle
 
     pickle.loads(pickle.dumps(y))
+
+
+def test_distinct_rvs():
+    """Make sure `RandomVariable`s generated using a `Model`'s default RNG state all have distinct states."""
+
+    with pm.Model(rng_seeder=np.random.RandomState(2023532)) as model:
+        X_rv = pm.Normal("x")
+        Y_rv = pm.Normal("y")
+
+        pp_samples = pm.sample_prior_predictive(samples=2)
+
+    assert X_rv.owner.inputs[0] != Y_rv.owner.inputs[0]
+
+    assert len(model.rng_seq) == 2
+
+    with pm.Model(rng_seeder=np.random.RandomState(2023532)):
+        X_rv = pm.Normal("x")
+        Y_rv = pm.Normal("y")
+
+        pp_samples_2 = pm.sample_prior_predictive(samples=2)
+
+    assert np.array_equal(pp_samples["y"], pp_samples_2["y"])

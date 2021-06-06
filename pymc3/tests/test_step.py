@@ -621,7 +621,7 @@ class TestStepMethods:  # yield test doesn't work subclassing object
             trace = sample(8000, tune=0, step=step, start=start, model=model, random_seed=1)
             self.check_stat(check, trace, step.__class__.__name__)
 
-    @pytest.mark.xfail(reason="Flat not refactored for v4")
+    @pytest.mark.xfail(reason="EllipticalSlice not refactored for v4")
     def test_step_elliptical_slice(self):
         start, model, (K, L, mu, std, noise) = mv_prior_simple()
         unc = noise ** 0.5
@@ -964,7 +964,7 @@ class TestNutsCheckTrace:
 
     def test_bad_init_nonparallel(self):
         with Model():
-            HalfNormal("a", sigma=1, testval=-1, transform=None)
+            HalfNormal("a", sigma=1, initval=-1, transform=None)
             with pytest.raises(SamplingError) as error:
                 sample(init=None, chains=1, random_seed=1)
             error.match("Initial evaluation")
@@ -972,17 +972,17 @@ class TestNutsCheckTrace:
     @pytest.mark.skipif(sys.version_info < (3, 6), reason="requires python3.6 or higher")
     def test_bad_init_parallel(self):
         with Model():
-            HalfNormal("a", sigma=1, testval=-1, transform=None)
+            HalfNormal("a", sigma=1, initval=-1, transform=None)
             with pytest.raises(SamplingError) as error:
                 sample(init=None, cores=2, random_seed=1)
             error.match("Initial evaluation")
 
     def test_linalg(self, caplog):
         with Model():
-            a = Normal("a", size=2, testval=floatX(np.zeros(2)))
+            a = Normal("a", size=2, initval=floatX(np.zeros(2)))
             a = at.switch(a > 0, np.inf, a)
             b = at.slinalg.solve(floatX(np.eye(2)), a)
-            Normal("c", mu=b, size=2, testval=floatX(np.r_[0.0, 0.0]))
+            Normal("c", mu=b, size=2, initval=floatX(np.r_[0.0, 0.0]))
             caplog.clear()
             trace = sample(20, init=None, tune=5, chains=2)
             warns = [msg.msg for msg in caplog.records]
@@ -1657,7 +1657,9 @@ class TestMLDA:
                 mout = []
                 coarse_models = []
 
-                with Model() as coarse_model_0:
+                rng = np.random.RandomState(seed)
+
+                with Model(rng_seeder=rng) as coarse_model_0:
                     if aesara.config.floatX == "float32":
                         Q = Data("Q", np.float32(0.0))
                     else:
@@ -1674,9 +1676,9 @@ class TestMLDA:
 
                     coarse_models.append(coarse_model_0)
 
-                coarse_model_0.default_rng.get_value(borrow=True).seed(seed)
+                rng = np.random.RandomState(seed)
 
-                with Model() as coarse_model_1:
+                with Model(rng_seeder=rng) as coarse_model_1:
                     if aesara.config.floatX == "float32":
                         Q = Data("Q", np.float32(0.0))
                     else:
@@ -1693,9 +1695,9 @@ class TestMLDA:
 
                     coarse_models.append(coarse_model_1)
 
-                coarse_model_1.default_rng.get_value(borrow=True).seed(seed)
+                rng = np.random.RandomState(seed)
 
-                with Model() as model:
+                with Model(rng_seeder=rng) as model:
                     if aesara.config.floatX == "float32":
                         Q = Data("Q", np.float32(0.0))
                     else:
