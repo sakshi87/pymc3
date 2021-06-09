@@ -123,7 +123,7 @@ jobs:
             chmod +x miniconda.sh && ./miniconda.sh -b -p $MINICONDA_PATH && \
             export PATH=$MINICONDA_PATH/bin:$PATH && \
             export Python=${{ env.python-version }} && \
-            conda create --name TEST --file conda-envs/environment-dev-py37.yml && \
+            conda create --name TEST && \
             source activate TEST && \
             conda activate pymc3-dev-py37 && \
             pip install -e . && \
