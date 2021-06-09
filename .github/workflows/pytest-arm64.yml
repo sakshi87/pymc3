@@ -114,19 +114,19 @@ jobs:
           use-only-tar-bz2: true # IMPORTANT: This needs to be set for caching to work properly!
       - name: Install-pymc3 and Run tests
         run: |
-        docker run --rm -v ${{ github.workspace }}:/ws:rw --workdir=/ws \
-          ${{ env.img }} \
-          bash -exc 'yum install -y wget && \
-          echo "Set Up Conda Env" && \
-          wget https://github.com/conda-forge/miniforge/releases/download/4.8.2-1/Miniforge3-4.8.2-1-Linux-aarch64.sh -O miniconda.sh && \
-          export MINICONDA_PATH=/root/miniconda && \
-          chmod +x miniconda.sh && ./miniconda.sh -b -p $MINICONDA_PATH && \
-          export PATH=$MINICONDA_PATH/bin:$PATH && \
-          export Python=${{ env.python-version }} && \
-          conda create --name TEST --file conda-envs/environment-dev-py37.yml && \
-          source activate TEST && \
-          conda activate pymc3-dev-py37 && \
-          pip install -e . && \
-          python --version && \
-          python -m pytest -vv --cov=pymc3 --cov-report=xml --cov-report term --durations=50 $TEST_SUBSET && \
-          deactivate'
+          docker run --rm -v ${{ github.workspace }}:/ws:rw --workdir=/ws \
+            ${{ env.img }} \
+            bash -exc 'yum install -y wget && \
+            echo "Set Up Conda Env" && \
+            wget https://github.com/conda-forge/miniforge/releases/download/4.8.2-1/Miniforge3-4.8.2-1-Linux-aarch64.sh -O miniconda.sh && \
+            export MINICONDA_PATH=/root/miniconda && \
+            chmod +x miniconda.sh && ./miniconda.sh -b -p $MINICONDA_PATH && \
+            export PATH=$MINICONDA_PATH/bin:$PATH && \
+            export Python=${{ env.python-version }} && \
+            conda create --name TEST --file conda-envs/environment-dev-py37.yml && \
+            source activate TEST && \
+            conda activate pymc3-dev-py37 && \
+            pip install -e . && \
+            python --version && \
+            python -m pytest -vv --cov=pymc3 --cov-report=xml --cov-report term --durations=50 $TEST_SUBSET && \
+            deactivate'
