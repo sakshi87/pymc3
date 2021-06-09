@@ -125,8 +125,8 @@ jobs:
             export Python=${{ env.python-version }} && \
             conda create --name TEST && \
             source activate TEST && \
-            conda activate pymc3-dev-py37 && \
             pip install -e . && \
+            uname -m && \
             python --version && \
             python -m pytest -vv --cov=pymc3 --cov-report=xml --cov-report term --durations=50 $TEST_SUBSET && \
             deactivate'
