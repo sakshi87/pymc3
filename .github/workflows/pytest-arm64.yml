@@ -118,6 +118,7 @@ jobs:
             ${{ env.img }} \
             bash -exc 'yum install -y wget && \
             yum install libhdf5-serial-dev netcdf-bin libnetcdf-dev && \
+            yum install hdf5-devel netcdf-devel setuptools pip gcc libcurl-devel mod_python
             echo "Set Up Conda Env" && \
             wget https://github.com/conda-forge/miniforge/releases/download/4.8.2-1/Miniforge3-4.8.2-1-Linux-aarch64.sh -O miniconda.sh && \
             export MINICONDA_PATH=/root/miniconda && \
