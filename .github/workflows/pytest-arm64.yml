@@ -117,6 +117,7 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/ws:rw --workdir=/ws \
             ${{ env.img }} \
             bash -exc 'yum install -y wget && \
+            yum install -y netcdf-bin libnetcdf-dev && \
             echo "Set Up Conda Env" && \
             wget https://github.com/conda-forge/miniforge/releases/download/4.8.2-1/Miniforge3-4.8.2-1-Linux-aarch64.sh -O miniconda.sh && \
             export MINICONDA_PATH=/root/miniconda && \
@@ -125,13 +126,6 @@ jobs:
             export Python=${{ env.python-version }} && \
             conda create --name TEST && \
             source activate TEST && \  
-            yum clean all  && \  
-            yum update yum  && \  
-            yum update curl  && \  
-            yum update openssl  && \  
-            yum update nss  && \  
-            yum install -y epel-release  && \  
-            yum install -y netcdf-bin libnetcdf-dev && \
             pip install -e . && \
             uname -m && \
             python --version && \
